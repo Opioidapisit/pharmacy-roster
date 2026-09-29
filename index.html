@@ -1,47 +1,168 @@
 <!doctype html>
 <html lang="th">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Pharmacy Roster</title>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=K2D:wght@400;500;600;700&display=swap" rel="stylesheet">
+
   <link rel="stylesheet" href="./app.css">
 </head>
 <body>
-  <div id="loading" class="loading"><div class="spinner"></div><span>กำลังเชื่อมต่อ...</span></div>
+  <div id="loading" class="loading hidden">
+    <div class="loading-card">
+      <div class="spinner"></div>
+      <span id="loadingText">กำลังโหลด...</span>
+    </div>
+  </div>
 
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- LOGIN -->
   <main id="loginView" class="center hidden">
     <section class="card login-card">
       <div class="brand">Pharmacy Roster</div>
       <h1>เข้าสู่ระบบ</h1>
       <p class="muted">ระบบจัดการตารางเวรพนักงานร้านยา</p>
+
       <form id="loginForm">
         <label>Username</label>
         <input id="username" autocomplete="username" placeholder="admin" required>
+
         <label>Password</label>
         <input id="password" type="password" autocomplete="current-password" required>
-        <button id="loginBtn" type="submit">เข้าสู่ระบบ</button>
+
+        <button type="submit" class="btn primary full">เข้าสู่ระบบ</button>
       </form>
+
       <div id="loginError" class="error"></div>
     </section>
   </main>
 
-  <main id="appView" class="hidden">
-    <header>
-      <div><b>Pharmacy Roster</b><span class="badge">Firebase</span></div>
-      <button id="logoutBtn" class="secondary">ออกจากระบบ</button>
-    </header>
-    <section class="content">
-      <div class="card">
-        <div class="success">เชื่อมต่อ Firebase สำเร็จ</div>
-        <h1>สวัสดี <span id="displayName"></span></h1>
-        <p>Username: <b id="displayUsername"></b></p>
-        <p>Role: <span id="displayRole" class="role"></span></p>
-        <p class="muted">นี่คือ Dashboard ทดสอบ V1 — Authentication + Firestore profile ทำงานแล้ว</p>
+  <!-- APP -->
+  <div id="appView" class="hidden">
+    <header class="topbar">
+      <div class="top-left">
+        <button id="menuBtn" class="icon-btn mobile-only" type="button">☰</button>
+        <div>
+          <div class="brand small">Pharmacy Roster</div>
+          <div id="topUser" class="top-user"></div>
+        </div>
       </div>
-    </section>
-  </main>
+
+      <div class="top-actions">
+        <span id="roleBadge" class="badge"></span>
+        <button id="logoutBtn" class="btn ghost">ออกจากระบบ</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside id="sidebar" class="sidebar">
+        <button class="nav-item active" data-view="dashboard">หน้าหลัก</button>
+        <button id="branchNav" class="nav-item hidden" data-view="branches">จัดการสาขา</button>
+        <button id="userNav" class="nav-item hidden" data-view="users">จัดการ User</button>
+      </aside>
+
+      <main class="main-content">
+        <!-- DASHBOARD -->
+        <section id="dashboardView" class="view">
+          <div class="page-head">
+            <div>
+              <h1>Dashboard</h1>
+              <p class="muted">ระบบ Firebase / Firestore พร้อมใช้งาน</p>
+            </div>
+          </div>
+
+          <div class="grid cards3">
+            <div class="card stat-card">
+              <div class="stat-label">ชื่อผู้ใช้</div>
+              <div id="dashName" class="stat-value"></div>
+            </div>
+
+            <div class="card stat-card">
+              <div class="stat-label">Username</div>
+              <div id="dashUsername" class="stat-value"></div>
+            </div>
+
+            <div class="card stat-card">
+              <div class="stat-label">Role</div>
+              <div id="dashRole" class="stat-value"></div>
+            </div>
+          </div>
+
+          <div id="adminQuick" class="card quick hidden">
+            <div>
+              <h2>Admin Master Data</h2>
+              <p class="muted">เริ่มต้นจากการสร้างสาขาที่ใช้ในระบบ</p>
+            </div>
+            <button id="goBranchBtn" class="btn primary">จัดการสาขา</button>
+          </div>
+        </section>
+
+        <!-- BRANCH MASTER -->
+        <section id="branchesView" class="view hidden">
+          <div class="page-head">
+            <div>
+              <h1>จัดการสาขา</h1>
+              <p class="muted">เพิ่ม แก้ไข ปิดใช้งาน และกำหนดสาขาย่อย</p>
+            </div>
+            <button id="addBranchBtn" class="btn primary">+ เพิ่มสาขา</button>
+          </div>
+
+          <div class="card branch-toolbar">
+            <input id="branchSearch" class="search" placeholder="ค้นหา Branch ID หรือชื่อสาขา">
+            <select id="branchStatus">
+              <option value="all">ทั้งหมด</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </div>
+
+          <div id="branchEmpty" class="empty card hidden">
+            ยังไม่มีสาขา กด “+ เพิ่มสาขา” เพื่อเริ่มสร้าง Master
+          </div>
+
+          <div id="branchTableWrap" class="table-wrap card hidden">
+            <table>
+              <thead>
+                <tr>
+                  <th>Branch ID</th>
+                  <th>ชื่อสาขา</th>
+                  <th>สาขาหลัก</th>
+                  <th>เวลาเปิด</th>
+                  <th>เวลา ปิด</th>
+                  <th>สถานะ</th>
+                  <th>ลำดับ</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="branchRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- USER PLACEHOLDER FOR STEP 12B -->
+        <section id="usersView" class="view hidden">
+          <div class="page-head">
+            <div>
+              <h1>จัดการ User</h1>
+              <p class="muted">ส่วนนี้จะเชื่อม Firebase Authentication ใน Step 12B</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <p>Branch Master พร้อมก่อน แล้วเราจะทำ User Management ต่อโดยให้ Admin สร้างบัญชีโดยไม่หลุดจาก session ปัจจุบัน</p>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- MODAL -->
+  <div id="modalHost"></div>
 
   <script type="module" src="./app.js"></script>
 </body>
