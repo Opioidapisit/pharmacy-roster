@@ -1,4 +1,4 @@
-import { auth, db, firebaseConfig } from "./firebase.js?v=8.0.0";
+import { auth, db, firebaseConfig } from "./firebase.js?v=9.0.0";
 
 import {
   signInWithEmailAndPassword,
@@ -73,6 +73,8 @@ let validationDetailsVisible = false;
 
 let auditLogs = [];
 let unsubscribeAudit = null;
+
+let selectedMyScheduleUserId = "";
 
 let currentView = "dashboard";
 
@@ -228,10 +230,14 @@ onAuthStateChanged(auth, async user=>{
     $("manageScheduleNav")?.classList.toggle("hidden", !canManageRequests);
 
     setNav("dashboard");
-    if(isAdmin){
-      startBranchListener();
-      startUserListener();
-    }
+    // Branch names are useful for every role.
+    startBranchListener();
+
+    // Manager/Admin need all users for schedule matrix and dropdown viewer.
+    if(canManageRequests) startUserListener();
+
+    selectedMyScheduleUserId = user.uid;
+    configureMyScheduleViewer();
 
     startMyChangeRequestListener();
     if(canManageRequests) startPendingChangeRequestListener();
@@ -245,6 +251,312 @@ onAuthStateChanged(auth, async user=>{
   }
 });
 
+
+
+
+/* ---------------- EXPORT / PRINT / BACKUP V9 ---------------- */
+
+function safeFilePart(value){
+  return String(value||"")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g,"-")
+    .replace(/\s+/g,"_")
+    .slice(0,80) || "export";
+}
+
+function downloadBlob(filename,content,type="application/octet-stream"){
+  const blob=content instanceof Blob ? content : new Blob([content],{type});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+
+function htmlTableToExcel(filename,title,headers,rows){
+  const table=`
+    <html xmlns:o="urn:schemas-microsoft-com:office:office"
+          xmlns:x="urn:schemas-microsoft-com:office:excel"
+          xmlns="http://www.w3.org/TR/REC-html40">
+    <head><meta charset="UTF-8"></head>
+    <body>
+      <h2>${escapeHtml(title)}</h2>
+      <table border="1">
+        <thead><tr>${headers.map(h=>`<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${rows.map(row=>`<tr>${row.map(v=>`<td>${escapeHtml(v??"")}</td>`).join("")}</tr>`).join("")}
+        </tbody>
+      </table>
+    </body>
+    </html>
+  `;
+  downloadBlob(filename,"\ufeff"+html,"application/vnd.ms-excel;charset=utf-8");
+}
+
+function scheduleExportRows(list){
+  return [...list]
+    .sort((a,b)=>
+      String(a.date||"").localeCompare(String(b.date||"")) ||
+      String(a.branchId||"").localeCompare(String(b.branchId||"")) ||
+      String(a.startTime||"").localeCompare(String(b.startTime||""))
+    )
+    .map(s=>{
+      const u=users.find(x=>x.uid===s.userId);
+      return [
+        s.date||"",
+        scheduleDateLabel(s.date||""),
+        s.userName || u?.name || "",
+        u?.username || "",
+        scheduleBranchName(s.branchId),
+        s.isOff ? "OFF" : (s.startTime||""),
+        s.isOff ? "" : (s.endTime||""),
+        s.isOff ? "OFF" : "WORK",
+        s.isOff ? 0 : scheduleHours(s.startTime,s.endTime),
+        s.note||""
+      ];
+    });
+}
+
+async function exportViewedScheduleExcel(){
+  const target=viewedScheduleUser();
+  const ym=$("myScheduleMonth")?.value||bangkokYearMonth();
+
+  const headers=["Date","วัน","ชื่อ","Username","สาขา","เริ่ม","จบ","สถานะ","ชั่วโมง","หมายเหตุ"];
+  const rows=scheduleExportRows(mySchedules);
+  const name=target.name||target.username||"user";
+
+  htmlTableToExcel(
+    `Schedule_${safeFilePart(name)}_${ym}.xls`,
+    `ตารางเวร ${name} ${ym}`,
+    headers,
+    rows
+  );
+
+  await writeAudit("SCHEDULE_EXPORT",target.uid,{type:"excel",yearMonth:ym,scope:"user"});
+}
+
+async function exportManagerScheduleExcel(){
+  if(!canManageSchedule()) return;
+
+  const ym=$("manageScheduleMonth")?.value||manageScheduleMonthValue||bangkokYearMonth();
+  const rows=scheduleExportRows(mergedSchedules());
+  const headers=["Date","วัน","ชื่อ","Username","สาขา","เริ่ม","จบ","สถานะ","ชั่วโมง","หมายเหตุ"];
+
+  htmlTableToExcel(
+    `Schedule_All_${ym}.xls`,
+    `ตารางเวรทั้งหมด ${ym}`,
+    headers,
+    rows
+  );
+
+  await writeAudit("SCHEDULE_EXPORT",ym,{type:"excel",yearMonth:ym,scope:"all"});
+}
+
+function openPrintWindow(title,bodyHtml){
+  const w=window.open("","_blank");
+  if(!w){
+    toast("Browser บล็อกหน้าต่าง Print กรุณาอนุญาต Pop-up",true);
+    return;
+  }
+
+  w.document.write(`
+    <!doctype html>
+    <html lang="th">
+    <head>
+      <meta charset="utf-8">
+      <title>${escapeHtml(title)}</title>
+      <style>
+        @page{size:A4 landscape;margin:8mm}
+        body{font-family:Tahoma,Arial,sans-serif;color:#111;font-size:11px}
+        h1{font-size:18px;margin:0 0 3px}
+        .sub{color:#555;margin-bottom:10px}
+        table{width:100%;border-collapse:collapse}
+        th,td{border:1px solid #999;padding:4px;vertical-align:top}
+        th{background:#eee}
+        .small{font-size:9px}
+        .summary{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+        .pill{border:1px solid #bbb;padding:3px 7px;border-radius:12px}
+      </style>
+    </head>
+    <body>${bodyHtml}</body>
+    </html>
+  `);
+
+  w.document.close();
+  setTimeout(()=>{w.focus();w.print();},300);
+}
+
+async function printViewedSchedule(){
+  const target=viewedScheduleUser();
+  const ym=$("myScheduleMonth")?.value||bangkokYearMonth();
+  const name=target.name||target.username||"User";
+  const total=mySchedules.reduce((n,s)=>n+(s.isOff?0:scheduleHours(s.startTime,s.endTime)),0);
+
+  const rows=[...mySchedules]
+    .sort((a,b)=>String(a.date||"").localeCompare(String(b.date||"")))
+    .map(s=>`
+      <tr>
+        <td>${escapeHtml(s.date||"")}</td>
+        <td>${escapeHtml(scheduleDateLabel(s.date||""))}</td>
+        <td>${escapeHtml(scheduleBranchName(s.branchId))}</td>
+        <td>${s.isOff ? "OFF" : `${escapeHtml(s.startTime||"")}-${escapeHtml(s.endTime||"")}`}</td>
+        <td>${s.isOff ? "0" : escapeHtml(scheduleHours(s.startTime,s.endTime))}</td>
+        <td>${escapeHtml(s.note||"")}</td>
+      </tr>
+    `).join("");
+
+  openPrintWindow(
+    `ตารางเวร ${name} ${ym}`,
+    `
+      <h1>ตารางเวร ${escapeHtml(name)}</h1>
+      <div class="sub">${escapeHtml(ym)}</div>
+      <div class="summary"><span class="pill">รวม ${escapeHtml(total)} ชั่วโมง</span></div>
+      <table>
+        <thead><tr><th>Date</th><th>วัน</th><th>สาขา</th><th>เวร</th><th>ชั่วโมง</th><th>หมายเหตุ</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `
+  );
+
+  await writeAudit("SCHEDULE_EXPORT",target.uid,{type:"print",yearMonth:ym,scope:"user"});
+}
+
+async function printManagerSchedule(){
+  if(!canManageSchedule()) return;
+
+  const ym=$("manageScheduleMonth")?.value||manageScheduleMonthValue||bangkokYearMonth();
+  const dates=monthDates(ym);
+  const bList=activeBranches();
+  const schedules=mergedSchedules();
+
+  const reqByDate={};
+  manageScheduleRequests.forEach(r=>(reqByDate[r.date]??=[]).push(r));
+
+  const rows=dates.map(date=>`
+    <tr>
+      <td><b>${escapeHtml(date)}</b></td>
+      ${bList.map(b=>{
+        const cell=schedules
+          .filter(s=>s.date===date&&s.branchId===b.id)
+          .sort((a,b)=>String(a.startTime||"").localeCompare(String(b.startTime||"")));
+        return `<td>${cell.map(s=>
+          `${escapeHtml(s.userName||"")} ${s.isOff ? "OFF" : `${escapeHtml(s.startTime||"")}-${escapeHtml(s.endTime||"")}`}`
+        ).join("<br>")}</td>`;
+      }).join("")}
+      <td>${(reqByDate[date]||[]).map(r=>
+        `คิว ${escapeHtml(r.queueNo)} ${escapeHtml(r.userName||"")}: ${escapeHtml(r.requestText||"")}`
+      ).join("<br>")}</td>
+    </tr>
+  `).join("");
+
+  openPrintWindow(
+    `ตารางเวรทั้งหมด ${ym}`,
+    `
+      <h1>ตารางเวรทั้งหมด</h1>
+      <div class="sub">${escapeHtml(ym)}</div>
+      <table>
+        <thead>
+          <tr>
+            <th>วันที่</th>
+            ${bList.map(b=>`<th>${escapeHtml(b.branchName||b.branchId||b.id)}</th>`).join("")}
+            <th>Request</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `
+  );
+
+  await writeAudit("SCHEDULE_EXPORT",ym,{type:"print",yearMonth:ym,scope:"all"});
+}
+
+$("exportManagerScheduleBtn")?.addEventListener("click",exportManagerScheduleExcel);
+$("printManagerScheduleBtn")?.addEventListener("click",printManagerSchedule);
+
+function serializeBackupValue(value){
+  if(value===null||value===undefined) return value;
+
+  if(value?.toDate && typeof value.toDate==="function"){
+    return {__type:"timestamp",iso:value.toDate().toISOString()};
+  }
+
+  if(Array.isArray(value)){
+    return value.map(serializeBackupValue);
+  }
+
+  if(typeof value==="object"){
+    const out={};
+    for(const [k,v] of Object.entries(value)){
+      out[k]=serializeBackupValue(v);
+    }
+    return out;
+  }
+
+  return value;
+}
+
+$("exportBackupBtn")?.addEventListener("click",exportFullBackup);
+
+async function exportFullBackup(){
+  if(!canAdmin()) return;
+
+  const collections=[
+    "users",
+    "branches",
+    "settings",
+    "schedules",
+    "requests",
+    "requestDays",
+    "requestUsage",
+    "changeRequests",
+    "auditLogs"
+  ];
+
+  showLoading(true,"กำลังสร้าง Backup...");
+  try{
+    const backup={
+      app:"Pharmacy Roster",
+      version:"V9.0.0",
+      exportedAt:new Date().toISOString(),
+      exportedBy:{
+        uid:currentUser.uid,
+        username:currentProfile.username,
+        name:currentProfile.name
+      },
+      note:"Firebase Authentication passwords are not included.",
+      collections:{}
+    };
+
+    for(const name of collections){
+      const snap=await getDocs(collection(db,name));
+      backup.collections[name]=snap.docs.map(d=>({
+        id:d.id,
+        data:serializeBackupValue(d.data())
+      }));
+    }
+
+    const stamp=new Date().toISOString().replace(/[:.]/g,"-");
+    downloadBlob(
+      `Pharmacy_Roster_Backup_${stamp}.json`,
+      JSON.stringify(backup,null,2),
+      "application/json;charset=utf-8"
+    );
+
+    const counts=Object.fromEntries(
+      Object.entries(backup.collections).map(([k,v])=>[k,v.length])
+    );
+    await writeAudit("BACKUP_EXPORT","FULL_BACKUP",counts);
+    toast("Export Backup เรียบร้อย");
+  }catch(err){
+    console.error(err);
+    toast(err.message||"สร้าง Backup ไม่สำเร็จ",true);
+  }finally{
+    showLoading(false);
+  }
+}
 
 
 /* ---------------- AUDIT / MAINTENANCE V8 ---------------- */
@@ -993,6 +1305,91 @@ function scheduleDateLabel(date){
 /* ----- MY SCHEDULE ----- */
 
 $("myScheduleMonth")?.addEventListener("change", ()=>startMyScheduleMonth($("myScheduleMonth").value));
+$("myScheduleUserSelect")?.addEventListener("change", e=>{
+  selectedMyScheduleUserId = e.target.value || currentUser?.uid || "";
+  updateMyScheduleHeading();
+  startMyScheduleMonth($("myScheduleMonth")?.value || bangkokYearMonth());
+});
+$("exportMyScheduleBtn")?.addEventListener("click", exportViewedScheduleExcel);
+$("printMyScheduleBtn")?.addEventListener("click", printViewedSchedule);
+
+function canViewOtherSchedules(){
+  return ["admin","manager"].includes(currentProfile?.role);
+}
+
+function myScheduleTargetUid(){
+  if(canViewOtherSchedules() && selectedMyScheduleUserId) return selectedMyScheduleUserId;
+  return currentUser?.uid || "";
+}
+
+function viewedScheduleUser(){
+  const uid=myScheduleTargetUid();
+  if(uid===currentUser?.uid){
+    return {
+      uid,
+      name:currentProfile?.name || currentProfile?.username || "",
+      username:currentProfile?.username || ""
+    };
+  }
+  return users.find(u=>u.uid===uid) || {uid,name:uid,username:""};
+}
+
+function configureMyScheduleViewer(){
+  const select=$("myScheduleUserSelect");
+  if(!select || !currentUser || !currentProfile) return;
+
+  if(!canViewOtherSchedules()){
+    select.classList.add("hidden");
+    selectedMyScheduleUserId=currentUser.uid;
+    updateMyScheduleHeading();
+    return;
+  }
+
+  select.classList.remove("hidden");
+
+  const list=activeScheduleUsers();
+  // Ensure current profile is available even before the users listener returns.
+  if(!list.some(u=>u.uid===currentUser.uid)){
+    list.push({
+      uid:currentUser.uid,
+      username:currentProfile.username,
+      name:currentProfile.name,
+      active:true,
+      color:currentProfile.color
+    });
+  }
+
+  list.sort((a,b)=>String(a.name||a.username||"").localeCompare(String(b.name||b.username||"")));
+
+  const wanted=selectedMyScheduleUserId || currentUser.uid;
+  select.innerHTML=list.map(u=>`
+    <option value="${escapeAttr(u.uid)}" ${u.uid===wanted ? "selected":""}>
+      ${escapeHtml(u.name||u.username)} (${escapeHtml(u.username||"")})
+    </option>
+  `).join("");
+
+  if(!list.some(u=>u.uid===wanted)){
+    selectedMyScheduleUserId=currentUser.uid;
+    select.value=currentUser.uid;
+  }else{
+    selectedMyScheduleUserId=wanted;
+  }
+
+  updateMyScheduleHeading();
+}
+
+function updateMyScheduleHeading(){
+  const target=viewedScheduleUser();
+  const own=target.uid===currentUser?.uid;
+
+  setText("myScheduleTitle",own ? "ตารางเวรของฉัน" : `ตารางเวร: ${target.name||target.username}`);
+  setText(
+    "myScheduleSubtitle",
+    own
+      ? "แสดงเฉพาะเวรของ User ที่กำลัง Login"
+      : `กำลังดูตารางของ ${target.name||target.username} · ${target.username||""}`
+  );
+}
 
 function ensureMyScheduleMonth(){
   const el = $("myScheduleMonth");
@@ -1005,10 +1402,15 @@ function startMyScheduleMonth(ym){
   if(!currentUser || !ym) return;
   if(unsubscribeMySchedule){ unsubscribeMySchedule(); unsubscribeMySchedule=null; }
 
+  const targetUid=myScheduleTargetUid();
+  if(!targetUid) return;
+
+  updateMyScheduleHeading();
+
   const q = query(
     collection(db,"schedules"),
     where("yearMonth","==",ym),
-    where("userId","==",currentUser.uid)
+    where("userId","==",targetUid)
   );
 
   unsubscribeMySchedule = onSnapshot(
@@ -1028,16 +1430,20 @@ function startMyScheduleMonth(ym){
 }
 
 function renderMySchedule(){
-  const host = $("myScheduleList");
+  const host=$("myScheduleList");
   if(!host) return;
 
-  const hours = mySchedules.reduce((sum,s)=>sum+(s.isOff?0:scheduleHours(s.startTime,s.endTime)),0);
-  const day = mySchedules.filter(s=>!s.isOff && s.startTime==="08:00" && s.endTime==="16:00").length;
-  const evening = mySchedules.filter(s=>!s.isOff && s.startTime==="16:00" && s.endTime==="24:00").length;
-  const ad = mySchedules.filter(s=>!s.isOff && s.startTime==="09:00" && s.endTime==="24:00").length;
-  const off = mySchedules.filter(s=>s.isOff).length;
+  const target=viewedScheduleUser();
+  const viewingOwn=target.uid===currentUser?.uid;
 
-  $("myScheduleSummary").innerHTML = `
+  const hours=mySchedules.reduce((sum,s)=>sum+(s.isOff?0:scheduleHours(s.startTime,s.endTime)),0);
+  const day=mySchedules.filter(s=>!s.isOff&&s.startTime==="08:00"&&s.endTime==="16:00").length;
+  const evening=mySchedules.filter(s=>!s.isOff&&s.startTime==="16:00"&&s.endTime==="24:00").length;
+  const ad=mySchedules.filter(s=>!s.isOff&&s.startTime==="09:00"&&s.endTime==="24:00").length;
+  const off=mySchedules.filter(s=>s.isOff).length;
+
+  $("myScheduleSummary").innerHTML=`
+    ${!viewingOwn ? `<span class="info-pill">กำลังดู: ${escapeHtml(target.name||target.username)}</span>`:""}
     <span class="info-pill">รวม ${hours} ชม.</span>
     <span class="info-pill">เช้า ${day}</span>
     <span class="info-pill">บ่าย ${evening}</span>
@@ -1045,37 +1451,49 @@ function renderMySchedule(){
     <span class="info-pill">OFF ${off}</span>
   `;
 
+  const changeInfo=$("myChangeRequestInfo");
+  if(changeInfo){
+    changeInfo.classList.toggle("hidden",!viewingOwn);
+    if(viewingOwn) renderMyChangeRequestInfo();
+  }
+
   if(!mySchedules.length){
-    host.innerHTML = `<div class="schedule-empty">ยังไม่มีตารางเวรในเดือนนี้</div>`;
+    host.innerHTML=`<div class="schedule-empty">ยังไม่มีตารางเวรในเดือนนี้</div>`;
     return;
   }
 
-  host.innerHTML = mySchedules.map(s=>{
-    const req = latestChangeForSchedule(s.id);
-    const pending = req?.status==="pending";
+  host.innerHTML=mySchedules.map(s=>{
+    const req=viewingOwn ? latestChangeForSchedule(s.id) : null;
+    const pending=req?.status==="pending";
 
     return `
-      <div class="my-shift" style="--u:${userColor(s.userId)}">
+      <div class="my-shift" style="--u:${escapeAttr(userColor(s.userId))}">
         <div class="my-shift-date">${escapeHtml(scheduleDateLabel(s.date))}</div>
+
         <div class="my-shift-main">
           <div class="my-shift-time">${s.isOff ? "OFF" : `${escapeHtml(s.startTime)}-${escapeHtml(s.endTime)}`}</div>
           <div>${escapeHtml(scheduleBranchName(s.branchId))}</div>
-          ${s.note ? `<div class="my-shift-note">${escapeHtml(s.note)}</div>` : ""}
-          ${req ? `<div style="margin-top:5px"><span class="change-pill ${escapeAttr(req.status)}">${changeStatusLabel(req.status)}</span></div>` : ""}
+          ${s.note ? `<div class="my-shift-note">${escapeHtml(s.note)}</div>`:""}
+          ${req ? `<div style="margin-top:5px"><span class="change-pill ${escapeAttr(req.status)}">${changeStatusLabel(req.status)}</span></div>`:""}
         </div>
-        <button class="change-btn" data-my-change="${escapeAttr(s.id)}" ${pending ? "disabled":""}>
-          ${pending ? "รออนุมัติ":"ขอแก้เวร"}
-        </button>
+
+        ${viewingOwn ? `
+          <button class="change-btn" data-my-change="${escapeAttr(s.id)}" ${pending ? "disabled":""}>
+            ${pending ? "รออนุมัติ":"ขอแก้เวร"}
+          </button>
+        `:""}
       </div>
     `;
   }).join("");
 
-  host.querySelectorAll("[data-my-change]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      const s = mySchedules.find(x=>x.id===btn.dataset.myChange);
-      if(s) openChangeRequestModal(s);
+  if(viewingOwn){
+    host.querySelectorAll("[data-my-change]").forEach(btn=>{
+      btn.addEventListener("click",()=>{
+        const s=mySchedules.find(x=>x.id===btn.dataset.myChange);
+        if(s) openChangeRequestModal(s);
+      });
     });
-  });
+  }
 }
 
 /* ----- MANAGER MATRIX ----- */
@@ -1089,6 +1507,7 @@ $("manageScheduleMonth")?.addEventListener("change", e=>{
     }
     clearScheduleDrafts();
   }
+  validationDetailsVisible=false;
   startManageScheduleMonth(next);
 });
 
@@ -1818,6 +2237,13 @@ function renderMyChangeRequestInfo(){
   const host = $("myChangeRequestInfo");
   if(!host) return;
 
+  if(myScheduleTargetUid()!==currentUser?.uid){
+    host.classList.add("hidden");
+    host.innerHTML="";
+    return;
+  }
+  host.classList.remove("hidden");
+
   const ym = $("myScheduleMonth")?.value || bangkokYearMonth();
   const monthList = myChangeRequests.filter(r=>r.yearMonth===ym);
 
@@ -2372,6 +2798,8 @@ function startUserListener(){
       users = snap.docs.map(d=>({ uid:d.id, ...d.data() }));
       users.sort((a,b)=>String(a.username||"").localeCompare(String(b.username||"")));
       renderUsers();
+      configureMyScheduleViewer();
+      renderScheduleLegend();
     },
     err=>{
       console.error(err);

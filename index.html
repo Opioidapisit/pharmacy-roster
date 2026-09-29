@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=K2D:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="./app.css?v=8.0.0">
+  <link rel="stylesheet" href="./app.css?v=9.0.0">
 </head>
 <body>
   <div id="loading" class="loading hidden">
@@ -39,7 +39,7 @@
       </form>
 
       <div id="loginError" class="error"></div>
-      <div class="build">Build V8.0.0</div>
+      <div class="build">Build V9.0.0 · Production 1.0</div>
     </section>
   </main>
 
@@ -137,12 +137,18 @@
 
         <!-- MY SCHEDULE -->
         <section id="myScheduleView" class="view hidden">
-          <div class="page-head">
+          <div class="page-head my-schedule-head">
             <div>
-              <h1>ตารางเวรของฉัน</h1>
-              <p class="muted">แสดงเฉพาะเวรของ User ที่กำลัง Login</p>
+              <h1 id="myScheduleTitle">ตารางเวรของฉัน</h1>
+              <p id="myScheduleSubtitle" class="muted">แสดงเฉพาะเวรของ User ที่กำลัง Login</p>
             </div>
-            <input id="myScheduleMonth" type="month" class="month-control">
+
+            <div class="my-schedule-controls">
+              <select id="myScheduleUserSelect" class="user-view-select hidden"></select>
+              <input id="myScheduleMonth" type="month" class="month-control">
+              <button id="exportMyScheduleBtn" class="btn ghost">Export Excel</button>
+              <button id="printMyScheduleBtn" class="btn ghost">Print / PDF</button>
+            </div>
           </div>
 
           <div id="myScheduleSummary" class="schedule-mini-summary"></div>
@@ -160,6 +166,8 @@
 
             <div class="schedule-manager-actions">
               <input id="manageScheduleMonth" type="month" class="month-control">
+              <button id="exportManagerScheduleBtn" class="btn ghost">Export Excel</button>
+              <button id="printManagerScheduleBtn" class="btn ghost">Print / PDF</button>
               <button id="validateScheduleBtn" class="btn ghost">ตรวจสอบตาราง <span id="validationCount" class="mini-count hidden">0</span></button>
               <button id="pendingChangesBtn" class="btn ghost">คำขอแก้เวร <span id="pendingChangesCount" class="mini-count hidden">0</span></button>
               <button id="saveScheduleAllBtn" class="btn primary" disabled>บันทึกทั้งหมด</button>
@@ -294,6 +302,8 @@
               <option value="CHANGE_REQUEST_DECIDE">CHANGE_REQUEST_DECIDE</option>
               <option value="PASSWORD_CHANGE">PASSWORD_CHANGE</option>
               <option value="RESET_OPERATIONAL_DATA">RESET_OPERATIONAL_DATA</option>
+              <option value="BACKUP_EXPORT">BACKUP_EXPORT</option>
+              <option value="SCHEDULE_EXPORT">SCHEDULE_EXPORT</option>
             </select>
           </div>
 
@@ -335,6 +345,12 @@
               <p class="muted">Schedules, Requests และ Change Requests เป็นข้อมูลที่ล้างได้สำหรับการทดสอบ</p>
             </div>
 
+            <div class="card">
+              <h2>Backup</h2>
+              <p class="muted">Export ข้อมูลระบบทั้งหมดเป็น JSON สำหรับเก็บสำรอง โดยไม่รวม Password</p>
+              <button id="exportBackupBtn" class="btn primary">Export Backup JSON</button>
+            </div>
+
             <div class="card danger-zone">
               <h2>ล้างข้อมูลทดสอบ</h2>
               <p class="muted">ล้างเฉพาะตารางเวร / Request / ตัวนับ Request / คำขอแก้เวร</p>
@@ -350,6 +366,6 @@
   <!-- MODAL -->
   <div id="modalHost"></div>
 
-  <script type="module" src="./app.js?v=8.0.0"></script>
+  <script type="module" src="./app.js?v=9.0.0"></script>
 </body>
 </html>
