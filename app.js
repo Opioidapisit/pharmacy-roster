@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js";
+import { auth, db } from "./firebase.js?v=2.1.1";
 
 import {
   signInWithEmailAndPassword,
@@ -16,6 +16,16 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
 
 const $ = id => document.getElementById(id);
+const setText = (id, value) => {
+  const el = $(id);
+  if(el) el.textContent = value ?? "";
+  return el;
+};
+const toggleHidden = (id, hide) => {
+  const el = $(id);
+  if(el) el.classList.toggle("hidden", !!hide);
+  return el;
+};
 const INTERNAL_DOMAIN = "pharmacy-roster.local";
 
 let currentUser = null;
@@ -24,17 +34,29 @@ let branches = [];
 let unsubscribeBranches = null;
 let currentView = "dashboard";
 
+const REQUIRED_V21 = [
+  "loading","loadingText","toast","loginView","appView","topUser","roleBadge",
+  "dashName","dashUsername","dashRole","branchNav","branchSearch","branchStatus",
+  "branchRows","branchTableWrap","branchEmpty","modalHost"
+];
+const missingV21 = REQUIRED_V21.filter(id=>!$(id));
+if(missingV21.length){
+  console.warn("V2.1 DOM mismatch:", missingV21);
+}
+
 function internalEmail(username){
   return `${username.trim().toLowerCase()}@${INTERNAL_DOMAIN}`;
 }
 
 function showLoading(show, text="กำลังโหลด..."){
-  $("loadingText").textContent = text;
-  $("loading").classList.toggle("hidden", !show);
+  setText("loadingText", text);
+  const el = $("loading");
+  if(el) el.classList.toggle("hidden", !show);
 }
 
 function toast(message, isError=false){
   const el = $("toast");
+  if(!el){ console.log(message); return; }
   el.textContent = message;
   el.className = `toast${isError ? " err" : ""}`;
   el.classList.remove("hidden");
@@ -77,9 +99,9 @@ $("loginForm").addEventListener("submit", async e=>{
   }
 });
 
-$("logoutBtn").addEventListener("click", ()=>signOut(auth));
-$("menuBtn").addEventListener("click", ()=>$("sidebar").classList.toggle("open"));
-$("goBranchBtn").addEventListener("click", ()=>setNav("branches"));
+$("logoutBtn")?.addEventListener("click", ()=>signOut(auth));
+$("menuBtn")?.addEventListener("click", ()=>$("sidebar")?.classList.toggle("open"));
+$("goBranchBtn")?.addEventListener("click", ()=>setNav("branches"));
 document.querySelectorAll(".nav-item").forEach(btn=>btn.addEventListener("click", ()=>setNav(btn.dataset.view)));
 
 onAuthStateChanged(auth, async user=>{
@@ -108,11 +130,11 @@ onAuthStateChanged(auth, async user=>{
     $("loginView").classList.add("hidden");
     $("appView").classList.remove("hidden");
 
-    $("topUser").textContent = `${profile.name || profile.username} · ${profile.username}`;
-    $("roleBadge").textContent = profile.role || "-";
-    $("dashName").textContent = profile.name || "-";
-    $("dashUsername").textContent = profile.username || "-";
-    $("dashRole").textContent = profile.role || "-";
+    setText("topUser", `${profile.name || profile.username} · ${profile.username}`);
+    setText("roleBadge", profile.role || "-");
+    setText("dashName", profile.name || "-");
+    setText("dashUsername", profile.username || "-");
+    setText("dashRole", profile.role || "-");
 
     const isAdmin = profile.role === "admin";
     $("branchNav").classList.toggle("hidden", !isAdmin);
@@ -150,9 +172,9 @@ function startBranchListener(){
   );
 }
 
-$("branchSearch").addEventListener("input", renderBranches);
-$("branchStatus").addEventListener("change", renderBranches);
-$("addBranchBtn").addEventListener("click", ()=>openBranchModal());
+$("branchSearch")?.addEventListener("input", renderBranches);
+$("branchStatus")?.addEventListener("change", renderBranches);
+$("addBranchBtn")?.addEventListener("click", ()=>openBranchModal());
 
 function renderBranches(){
   if(!canAdmin()) return;

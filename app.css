@@ -63,3 +63,5 @@ th{background:#f8fafc;color:#475569;position:sticky;top:0}
   .page-head{align-items:flex-start}.branch-toolbar{flex-direction:column}.branch-toolbar select{width:100%}
   .modal-grid{grid-template-columns:1fr}
 }
+
+.build{margin-top:10px;color:#98a2b3;font-size:10px;text-align:center}
