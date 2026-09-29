@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=K2D:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="./app.css?v=2.1.1">
+  <link rel="stylesheet" href="./app.css?v=3.0.0">
 </head>
 <body>
   <div id="loading" class="loading hidden">
@@ -39,7 +39,7 @@
       </form>
 
       <div id="loginError" class="error"></div>
-      <div class="build">Build V2.1.1</div>
+      <div class="build">Build V3.0.0</div>
     </section>
   </main>
 
@@ -145,17 +145,50 @@
           </div>
         </section>
 
-        <!-- USER PLACEHOLDER FOR STEP 12B -->
+        <!-- USER MASTER -->
         <section id="usersView" class="view hidden">
           <div class="page-head">
             <div>
               <h1>จัดการ User</h1>
-              <p class="muted">ส่วนนี้จะเชื่อม Firebase Authentication ใน Step 12B</p>
+              <p class="muted">เพิ่ม แก้ไข เปิด/ปิด User และกำหนด Role / สาขาประจำ</p>
             </div>
+            <button id="addUserBtn" class="btn primary">+ เพิ่ม User</button>
           </div>
 
-          <div class="card">
-            <p>Branch Master พร้อมก่อน แล้วเราจะทำ User Management ต่อโดยให้ Admin สร้างบัญชีโดยไม่หลุดจาก session ปัจจุบัน</p>
+          <div class="card branch-toolbar">
+            <input id="userSearch" class="search" placeholder="ค้นหา Username หรือชื่อ">
+            <select id="userRoleFilter">
+              <option value="all">ทุก Role</option>
+              <option value="admin">Admin</option>
+              <option value="manager">Manager</option>
+              <option value="user">User</option>
+            </select>
+            <select id="userStatusFilter">
+              <option value="all">ทุกสถานะ</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </div>
+
+          <div id="userEmpty" class="empty card hidden">
+            ยังไม่มี User
+          </div>
+
+          <div id="userTableWrap" class="table-wrap card hidden">
+            <table>
+              <thead>
+                <tr>
+                  <th>สี</th>
+                  <th>Username</th>
+                  <th>ชื่อ</th>
+                  <th>Role</th>
+                  <th>สาขาประจำ</th>
+                  <th>สถานะ</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="userRows"></tbody>
+            </table>
           </div>
         </section>
       </main>
@@ -165,6 +198,6 @@
   <!-- MODAL -->
   <div id="modalHost"></div>
 
-  <script type="module" src="./app.js?v=2.1.1"></script>
+  <script type="module" src="./app.js?v=3.0.0"></script>
 </body>
 </html>

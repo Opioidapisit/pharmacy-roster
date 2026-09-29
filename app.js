@@ -1,10 +1,18 @@
-import { auth, db } from "./firebase.js?v=2.1.1";
+import { auth, db, firebaseConfig } from "./firebase.js?v=3.0.0";
 
 import {
   signInWithEmailAndPassword,
   signOut,
-  onAuthStateChanged
+  onAuthStateChanged,
+  getAuth,
+  createUserWithEmailAndPassword,
+  deleteUser
 } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-auth.js";
+
+import {
+  initializeApp,
+  deleteApp
+} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
 
 import {
   doc,
@@ -31,13 +39,15 @@ const INTERNAL_DOMAIN = "pharmacy-roster.local";
 let currentUser = null;
 let currentProfile = null;
 let branches = [];
+let users = [];
 let unsubscribeBranches = null;
+let unsubscribeUsers = null;
 let currentView = "dashboard";
 
 const REQUIRED_V21 = [
   "loading","loadingText","toast","loginView","appView","topUser","roleBadge",
   "dashName","dashUsername","dashRole","branchNav","branchSearch","branchStatus",
-  "branchRows","branchTableWrap","branchEmpty","modalHost"
+  "branchRows","branchTableWrap","branchEmpty","userRows","userTableWrap","userEmpty","modalHost"
 ];
 const missingV21 = REQUIRED_V21.filter(id=>!$(id));
 if(missingV21.length){
@@ -110,6 +120,7 @@ onAuthStateChanged(auth, async user=>{
     currentUser = null;
     currentProfile = null;
     if(unsubscribeBranches){ unsubscribeBranches(); unsubscribeBranches=null; }
+    if(unsubscribeUsers){ unsubscribeUsers(); unsubscribeUsers=null; }
     $("appView").classList.add("hidden");
     $("loginView").classList.remove("hidden");
     $("password").value = "";
@@ -142,7 +153,10 @@ onAuthStateChanged(auth, async user=>{
     $("adminQuick").classList.toggle("hidden", !isAdmin);
 
     setNav("dashboard");
-    if(isAdmin) startBranchListener();
+    if(isAdmin){
+      startBranchListener();
+      startUserListener();
+    }
 
   }catch(err){
     console.error(err);
@@ -350,6 +364,287 @@ async function saveBranch(existing){
     console.error(err);
     toast(err.message || "บันทึกไม่สำเร็จ", true);
   }finally{
+    showLoading(false);
+  }
+}
+
+
+/* ---------------- USER MASTER ---------------- */
+
+function startUserListener(){
+  if(unsubscribeUsers) unsubscribeUsers();
+
+  unsubscribeUsers = onSnapshot(
+    collection(db, "users"),
+    snap=>{
+      users = snap.docs.map(d=>({ uid:d.id, ...d.data() }));
+      users.sort((a,b)=>String(a.username||"").localeCompare(String(b.username||"")));
+      renderUsers();
+    },
+    err=>{
+      console.error(err);
+      toast("โหลดข้อมูล User ไม่สำเร็จ", true);
+    }
+  );
+}
+
+$("userSearch")?.addEventListener("input", renderUsers);
+$("userRoleFilter")?.addEventListener("change", renderUsers);
+$("userStatusFilter")?.addEventListener("change", renderUsers);
+$("addUserBtn")?.addEventListener("click", ()=>openUserModal());
+
+function renderUsers(){
+  if(!canAdmin()) return;
+
+  const q = $("userSearch")?.value.trim().toLowerCase() || "";
+  const role = $("userRoleFilter")?.value || "all";
+  const status = $("userStatusFilter")?.value || "all";
+
+  const filtered = users.filter(u=>{
+    const text = `${u.username||""} ${u.name||""}`.toLowerCase();
+    const active = u.active !== false;
+    const okSearch = !q || text.includes(q);
+    const okRole = role==="all" || u.role===role;
+    const okStatus = status==="all" ||
+      (status==="active" && active) ||
+      (status==="inactive" && !active);
+    return okSearch && okRole && okStatus;
+  });
+
+  $("userEmpty")?.classList.toggle("hidden", filtered.length !== 0);
+  $("userTableWrap")?.classList.toggle("hidden", filtered.length === 0);
+
+  if(!$("userRows")) return;
+
+  $("userRows").innerHTML = filtered.map(u=>`
+    <tr>
+      <td><span class="user-dot" style="background:${escapeAttr(u.color || "#64748b")}"></span></td>
+      <td><b>${escapeHtml(u.username || "")}</b></td>
+      <td>${escapeHtml(u.name || "")}</td>
+      <td><span class="role-pill ${escapeAttr(u.role||"user")}">${escapeHtml(u.role||"user")}</span></td>
+      <td>${escapeHtml(branchNameForUser(u.homeBranch))}</td>
+      <td><span class="status ${u.active===false ? "inactive":"active"}">${u.active===false ? "Inactive":"Active"}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="btn ghost" data-user-edit="${escapeAttr(u.uid)}">แก้ไข</button>
+        </div>
+      </td>
+    </tr>
+  `).join("");
+
+  document.querySelectorAll("[data-user-edit]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const u = users.find(x=>x.uid===btn.dataset.userEdit);
+      if(u) openUserModal(u);
+    });
+  });
+}
+
+function branchNameForUser(branchId){
+  if(!branchId) return "-";
+  const b = branches.find(x=>x.id===branchId || x.branchId===branchId);
+  return b ? `${b.branchId||b.id} · ${b.branchName||""}` : branchId;
+}
+
+function openUserModal(user=null){
+  if(!canAdmin()){
+    toast("เฉพาะ Admin เท่านั้น", true);
+    return;
+  }
+
+  const editing = !!user;
+  const branchOptions = branches
+    .filter(b=>b.active!==false)
+    .map(b=>`<option value="${escapeAttr(b.id)}" ${user?.homeBranch===b.id ? "selected":""}>${escapeHtml(b.branchId||b.id)} · ${escapeHtml(b.branchName||"")}</option>`)
+    .join("");
+
+  $("modalHost").innerHTML = `
+    <div class="modal-backdrop" id="userBackdrop">
+      <div class="modal">
+        <div class="page-head">
+          <div>
+            <h2>${editing ? "แก้ไข User":"เพิ่ม User"}</h2>
+            <div class="muted">${editing ? escapeHtml(user.username||"") : "สร้างบัญชี Firebase Authentication + Firestore Profile"}</div>
+          </div>
+        </div>
+
+        <div class="modal-grid">
+          <div>
+            <label>Username</label>
+            <input id="mUsername" value="${escapeAttr(user?.username||"")}" ${editing ? "disabled":""} placeholder="เช่น oil">
+          </div>
+
+          <div>
+            <label>ชื่อที่แสดง</label>
+            <input id="mUserName" value="${escapeAttr(user?.name||"")}" placeholder="เช่น Oil">
+          </div>
+
+          ${editing ? "" : `
+          <div>
+            <label>Password เริ่มต้น</label>
+            <input id="mPassword" type="password" placeholder="อย่างน้อย 6 ตัวอักษร">
+            <div class="password-note">ใช้สำหรับ Login ครั้งแรก</div>
+          </div>`}
+
+          <div>
+            <label>Role</label>
+            <select id="mRole">
+              <option value="user" ${user?.role==="user" ? "selected":""}>user</option>
+              <option value="manager" ${user?.role==="manager" ? "selected":""}>manager</option>
+              <option value="admin" ${user?.role==="admin" ? "selected":""}>admin</option>
+            </select>
+          </div>
+
+          <div>
+            <label>สาขาประจำ</label>
+            <select id="mHomeBranch">
+              <option value="">— ไม่ระบุ —</option>
+              ${branchOptions}
+            </select>
+          </div>
+
+          <div>
+            <label>สีประจำ User</label>
+            <div class="color-line">
+              <input id="mColor" type="color" value="${escapeAttr(user?.color || nextUserColor())}">
+              <span class="muted">ใช้ในตารางเวร</span>
+            </div>
+          </div>
+        </div>
+
+        <label class="checkbox-row">
+          <input id="mUserActive" type="checkbox" ${user?.active===false ? "" : "checked"}>
+          Active / อนุญาตให้ใช้งานระบบ
+        </label>
+
+        <div class="actions">
+          <button id="cancelUser" class="btn ghost">ยกเลิก</button>
+          <button id="saveUser" class="btn primary">${editing ? "บันทึกการแก้ไข":"สร้าง User"}</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $("cancelUser").addEventListener("click", closeModal);
+  $("userBackdrop").addEventListener("click", e=>{ if(e.target.id==="userBackdrop") closeModal(); });
+  $("saveUser").addEventListener("click", ()=>saveUser(user));
+}
+
+function nextUserColor(){
+  const palette = [
+    "#2563eb","#dc2626","#16a34a","#9333ea","#ea580c","#0891b2",
+    "#db2777","#4f46e5","#65a30d","#b45309","#0f766e","#7c3aed"
+  ];
+  return palette[users.length % palette.length];
+}
+
+async function saveUser(existing){
+  if(!canAdmin()) return;
+
+  const username = (existing?.username || $("mUsername")?.value || "").trim().toLowerCase();
+  const name = $("mUserName")?.value.trim() || "";
+  const role = $("mRole")?.value || "user";
+  const homeBranch = $("mHomeBranch")?.value || "";
+  const color = $("mColor")?.value || "#64748b";
+  const active = $("mUserActive")?.checked === true;
+
+  if(!username){
+    toast("กรุณาระบุ Username", true); return;
+  }
+  if(!/^[a-z0-9._-]+$/.test(username)){
+    toast("Username ใช้ a-z, 0-9, จุด, _ หรือ - เท่านั้น", true); return;
+  }
+  if(!name){
+    toast("กรุณาระบุชื่อที่แสดง", true); return;
+  }
+  if(!["admin","manager","user"].includes(role)){
+    toast("Role ไม่ถูกต้อง", true); return;
+  }
+
+  // Prevent accidentally disabling the currently logged-in admin.
+  if(existing?.uid === currentUser?.uid && !active){
+    toast("ไม่สามารถปิด Active บัญชีที่กำลัง Login อยู่", true); return;
+  }
+
+  if(existing){
+    showLoading(true, "กำลังบันทึก User...");
+    try{
+      await setDoc(doc(db, "users", existing.uid), {
+        username,
+        name,
+        role,
+        homeBranch,
+        color,
+        active,
+        updatedAt: serverTimestamp()
+      }, { merge:true });
+
+      closeModal();
+      toast("แก้ไข User เรียบร้อย");
+    }catch(err){
+      console.error(err);
+      toast(err.message || "บันทึก User ไม่สำเร็จ", true);
+    }finally{
+      showLoading(false);
+    }
+    return;
+  }
+
+  const password = $("mPassword")?.value || "";
+  if(password.length < 6){
+    toast("Password อย่างน้อย 6 ตัวอักษร", true); return;
+  }
+  if(users.some(u=>String(u.username||"").toLowerCase()===username)){
+    toast("Username นี้มีอยู่แล้ว", true); return;
+  }
+
+  showLoading(true, "กำลังสร้างบัญชี User...");
+  let secondaryApp = null;
+  let createdAuthUser = null;
+
+  try{
+    // Secondary Firebase app keeps the Admin signed in on the primary app.
+    secondaryApp = initializeApp(firebaseConfig, `user-create-${Date.now()}`);
+    const secondaryAuth = getAuth(secondaryApp);
+
+    const cred = await createUserWithEmailAndPassword(
+      secondaryAuth,
+      internalEmail(username),
+      password
+    );
+
+    createdAuthUser = cred.user;
+
+    try{
+      await setDoc(doc(db, "users", createdAuthUser.uid), {
+        username,
+        name,
+        role,
+        homeBranch,
+        color,
+        active,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    }catch(profileErr){
+      // Avoid orphan Auth account when Firestore profile creation fails.
+      try{ await deleteUser(createdAuthUser); }catch(cleanErr){ console.error("cleanup auth user failed", cleanErr); }
+      throw profileErr;
+    }
+
+    await signOut(secondaryAuth);
+    closeModal();
+    toast(`สร้าง User ${username} เรียบร้อย`);
+  }catch(err){
+    console.error(err);
+    let msg = err.message || "สร้าง User ไม่สำเร็จ";
+    if(err.code==="auth/email-already-in-use") msg = "Username นี้มีบัญชี Authentication อยู่แล้ว";
+    if(err.code==="auth/weak-password") msg = "Password ต้องอย่างน้อย 6 ตัวอักษร";
+    toast(msg, true);
+  }finally{
+    if(secondaryApp){
+      try{ await deleteApp(secondaryApp); }catch(e){}
+    }
     showLoading(false);
   }
 }

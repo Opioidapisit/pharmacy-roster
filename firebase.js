@@ -2,7 +2,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebas
 import { getAuth } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-auth.js";
 import { getFirestore } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
 
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: "AIzaSyBJYZgp_s8-Ha5SGikmn8Vgq1uXjWhQjRg",
   authDomain: "pharmacy-roster-715ec.firebaseapp.com",
   projectId: "pharmacy-roster-715ec",

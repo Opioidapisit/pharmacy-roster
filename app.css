@@ -65,3 +65,13 @@ th{background:#f8fafc;color:#475569;position:sticky;top:0}
 }
 
 .build{margin-top:10px;color:#98a2b3;font-size:10px;text-align:center}
+
+/* V3 User Master */
+.user-dot{width:16px;height:16px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,.12)}
+.role-pill{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;background:#eef2ff;color:#3730a3}
+.role-pill.admin{background:#ede9fe;color:#6d28d9}
+.role-pill.manager{background:#e0f2fe;color:#0369a1}
+.role-pill.user{background:#f1f5f9;color:#475569}
+.color-line{display:flex;gap:8px;align-items:center}
+.color-line input[type="color"]{width:48px;height:38px;padding:2px}
+.password-note{font-size:11px;color:#667085;margin-top:5px}
