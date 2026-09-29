@@ -107,3 +107,49 @@ th{background:#f8fafc;color:#475569;position:sticky;top:0}
   .request-tip{width:100%;margin-left:0}
   .request-calendar{grid-template-columns:repeat(7,125px)}
 }
+
+/* V5 Schedule */
+.month-control{width:160px}
+.schedule-manager-wide{max-width:none}
+.schedule-manager-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:8px}
+.schedule-manager-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.schedule-legend-bar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0}
+.schedule-user-legend{display:flex;gap:4px;flex-wrap:wrap}
+.schedule-legend-item{font-size:10px;padding:2px 7px;border-radius:999px;background:#fff;border:1px solid var(--line);border-left:5px solid var(--u,#64748b)}
+.schedule-help{font-size:10px}
+.schedule-matrix-wrap{overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff;max-height:none}
+.schedule-matrix{border-collapse:separate;border-spacing:0;min-width:max-content;width:auto}
+.schedule-matrix th,.schedule-matrix td{border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:3px;min-width:125px;font-size:10px;vertical-align:top;background:#fff}
+.schedule-matrix thead th{position:sticky;top:0;z-index:8;background:#dbeafe;text-align:center;height:38px}
+.schedule-matrix .date-col{position:sticky;left:0;z-index:7;min-width:76px;width:76px;background:#f8fafc;font-weight:700;text-align:center}
+.schedule-matrix thead .date-col{z-index:12;background:#bfdbfe}
+.schedule-branch-head small{display:block;color:#64748b;font-size:9px;font-weight:400}
+.schedule-shift{font-size:10px;line-height:1.25;padding:3px 5px;margin:2px 0;border-radius:5px;border-left:4px solid var(--u,#64748b);cursor:pointer;white-space:nowrap}
+.schedule-shift.off{background:#f1f5f9!important}
+.schedule-shift.dirty:after{content:" *";font-weight:700}
+.schedule-add{width:100%;border:1px dashed #93c5fd;background:#f8fbff;color:#1d4ed8;border-radius:5px;padding:2px;cursor:pointer;font-size:9px;margin-top:2px}
+.schedule-coverage{height:3px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:3px}
+.schedule-coverage i{display:block;height:100%;background:#22c55e}
+.schedule-request-col{min-width:155px!important;max-width:190px}
+.schedule-request{font-size:9px;background:#fef3c7;border-radius:5px;padding:3px 4px;margin:2px 0;white-space:normal}
+.schedule-bottom-summary{margin:14px 0 30px}
+.schedule-bottom-summary h2{margin-bottom:8px}
+.schedule-summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px}
+.schedule-stat{background:#fff;border:1px solid var(--line);border-left:5px solid var(--u,#64748b);border-radius:8px;padding:8px;font-size:10px}
+.schedule-stat b{display:block;font-size:12px;margin-bottom:2px}
+.my-schedule-list{display:grid;gap:7px}
+.my-shift{background:#fff;border:1px solid var(--line);border-left:5px solid var(--u,#64748b);border-radius:9px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.my-shift-date{font-weight:700;min-width:95px}
+.my-shift-main{flex:1}
+.my-shift-time{font-size:16px;font-weight:700}
+.my-shift-note{font-size:11px;color:#667085}
+.schedule-mini-summary{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.schedule-mini-summary .info-pill{background:#fff}
+.schedule-empty{background:#fff;border:1px solid var(--line);border-radius:10px;padding:28px;text-align:center;color:#667085}
+.unsaved{background:#fef3c7;color:#92400e;border-color:#fde68a}
+@media(max-width:800px){
+  .schedule-manager-head{align-items:flex-start;flex-direction:column}
+  .schedule-manager-actions{width:100%}.schedule-manager-actions .month-control{width:100%}
+  .schedule-matrix th,.schedule-matrix td{min-width:120px}
+  .my-shift{align-items:flex-start;flex-direction:column}
+}

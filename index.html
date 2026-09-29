@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=K2D:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="./app.css?v=4.0.0">
+  <link rel="stylesheet" href="./app.css?v=5.0.0">
 </head>
 <body>
   <div id="loading" class="loading hidden">
@@ -39,7 +39,7 @@
       </form>
 
       <div id="loginError" class="error"></div>
-      <div class="build">Build V4.0.0</div>
+      <div class="build">Build V5.0.0</div>
     </section>
   </main>
 
@@ -64,6 +64,8 @@
       <aside id="sidebar" class="sidebar">
         <button class="nav-item active" data-view="dashboard">หน้าหลัก</button>
         <button id="requestNav" class="nav-item" data-view="requests">ขอรีเควส</button>
+        <button id="scheduleNav" class="nav-item" data-view="mySchedule">ดูตารางเวร</button>
+        <button id="manageScheduleNav" class="nav-item hidden" data-view="manageSchedule">จัดตารางเวร</button>
         <button id="branchNav" class="nav-item hidden" data-view="branches">จัดการสาขา</button>
         <button id="userNav" class="nav-item hidden" data-view="users">จัดการ User</button>
       </aside>
@@ -127,6 +129,49 @@
           </div>
 
           <div id="requestCalendar" class="request-calendar"></div>
+        </section>
+
+
+        <!-- MY SCHEDULE -->
+        <section id="myScheduleView" class="view hidden">
+          <div class="page-head">
+            <div>
+              <h1>ตารางเวรของฉัน</h1>
+              <p class="muted">แสดงเฉพาะเวรของ User ที่กำลัง Login</p>
+            </div>
+            <input id="myScheduleMonth" type="month" class="month-control">
+          </div>
+
+          <div id="myScheduleSummary" class="schedule-mini-summary"></div>
+          <div id="myScheduleList" class="my-schedule-list"></div>
+        </section>
+
+        <!-- MANAGER SCHEDULE MATRIX -->
+        <section id="manageScheduleView" class="view hidden schedule-manager-wide">
+          <div class="schedule-manager-head">
+            <div>
+              <h1>จัดตารางเวร</h1>
+              <p class="muted">วันที่เป็นแถว · ทุกสาขาเป็นคอลัมน์ · แก้หลายเวรแล้วบันทึกครั้งเดียว</p>
+            </div>
+
+            <div class="schedule-manager-actions">
+              <input id="manageScheduleMonth" type="month" class="month-control">
+              <button id="saveScheduleAllBtn" class="btn primary" disabled>บันทึกทั้งหมด</button>
+              <span id="scheduleSaveState" class="info-pill">บันทึกแล้ว</span>
+            </div>
+          </div>
+
+          <div class="schedule-legend-bar">
+            <div id="scheduleUserLegend" class="schedule-user-legend"></div>
+            <div class="muted schedule-help">คลิก + เพื่อเพิ่มเวร · คลิกเวรเพื่อแก้ไข/ลบ</div>
+          </div>
+
+          <div id="scheduleMatrixHost"></div>
+
+          <div class="schedule-bottom-summary">
+            <h2>สรุปชั่วโมง / จำนวนเวร</h2>
+            <div id="scheduleSummaryGrid" class="schedule-summary-grid"></div>
+          </div>
         </section>
 
         <!-- BRANCH MASTER -->
@@ -224,6 +269,6 @@
   <!-- MODAL -->
   <div id="modalHost"></div>
 
-  <script type="module" src="./app.js?v=4.0.0"></script>
+  <script type="module" src="./app.js?v=5.0.0"></script>
 </body>
 </html>

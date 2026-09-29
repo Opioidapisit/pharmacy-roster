@@ -1,4 +1,4 @@
-import { auth, db, firebaseConfig } from "./firebase.js?v=4.0.0";
+import { auth, db, firebaseConfig } from "./firebase.js?v=5.0.0";
 
 import {
   signInWithEmailAndPassword,
@@ -23,7 +23,8 @@ import {
   serverTimestamp,
   query,
   where,
-  runTransaction
+  runTransaction,
+  writeBatch
 } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
 
 const $ = id => document.getElementById(id);
@@ -50,12 +51,23 @@ let unsubscribeRequestRules = null;
 let requests = [];
 let requestRules = { dayLimit:null, userMonthMax:null };
 let currentRequestMonth = "";
+
+let unsubscribeMySchedule = null;
+let unsubscribeManageSchedule = null;
+let unsubscribeManageRequests = null;
+let mySchedules = [];
+let manageScheduleBase = [];
+let manageScheduleRequests = [];
+let scheduleDrafts = new Map();
+let scheduleDeletes = new Set();
+let manageScheduleMonthValue = "";
+
 let currentView = "dashboard";
 
 const REQUIRED_V21 = [
   "loading","loadingText","toast","loginView","appView","topUser","roleBadge",
   "dashName","dashUsername","dashRole","branchNav","branchSearch","branchStatus",
-  "branchRows","branchTableWrap","branchEmpty","userRows","userTableWrap","userEmpty","requestCalendar","requestMonth","modalHost"
+  "branchRows","branchTableWrap","branchEmpty","userRows","userTableWrap","userEmpty","requestCalendar","requestMonth","myScheduleList","myScheduleMonth","manageScheduleMonth","scheduleMatrixHost","modalHost"
 ];
 const missingV21 = REQUIRED_V21.filter(id=>!$(id));
 if(missingV21.length){
@@ -88,15 +100,32 @@ function showOnly(viewId){
 }
 
 function setNav(view){
+  if(currentView==="manageSchedule" && view!=="manageSchedule" && hasScheduleDirty()){
+    if(!confirm(`มีการแก้ไขตารางเวร ${scheduleDirtyCount()} รายการที่ยังไม่ได้บันทึก\n\nหากออกจากหน้านี้ การแก้ไขจะหายไป\nต้องการออกโดยไม่บันทึกหรือไม่?`)){
+      return;
+    }
+    clearScheduleDrafts();
+  }
+
   currentView = view;
   document.querySelectorAll(".nav-item").forEach(b=>b.classList.toggle("active", b.dataset.view===view));
+
   if(view==="dashboard") showOnly("dashboardView");
   if(view==="requests"){
     showOnly("requestsView");
     ensureRequestMonth();
   }
+  if(view==="mySchedule"){
+    showOnly("myScheduleView");
+    ensureMyScheduleMonth();
+  }
+  if(view==="manageSchedule"){
+    showOnly("manageScheduleView");
+    ensureManageScheduleMonth();
+  }
   if(view==="branches") showOnly("branchesView");
   if(view==="users") showOnly("usersView");
+
   $("sidebar").classList.remove("open");
 }
 
@@ -135,6 +164,10 @@ onAuthStateChanged(auth, async user=>{
     if(unsubscribeUsers){ unsubscribeUsers(); unsubscribeUsers=null; }
     if(unsubscribeRequests){ unsubscribeRequests(); unsubscribeRequests=null; }
     if(unsubscribeRequestRules){ unsubscribeRequestRules(); unsubscribeRequestRules=null; }
+    if(unsubscribeMySchedule){ unsubscribeMySchedule(); unsubscribeMySchedule=null; }
+    if(unsubscribeManageSchedule){ unsubscribeManageSchedule(); unsubscribeManageSchedule=null; }
+    if(unsubscribeManageRequests){ unsubscribeManageRequests(); unsubscribeManageRequests=null; }
+    clearScheduleDrafts();
     $("appView").classList.add("hidden");
     $("loginView").classList.remove("hidden");
     $("password").value = "";
@@ -168,6 +201,7 @@ onAuthStateChanged(auth, async user=>{
 
     const canManageRequests = ["admin","manager"].includes(profile.role);
     $("requestRuleBtn")?.classList.toggle("hidden", !canManageRequests);
+    $("manageScheduleNav")?.classList.toggle("hidden", !canManageRequests);
 
     setNav("dashboard");
     if(isAdmin){
@@ -632,6 +666,613 @@ async function saveRequestRules(){
   }catch(err){
     console.error(err);
     toast(err.message || "บันทึกไม่สำเร็จ", true);
+  }finally{
+    showLoading(false);
+  }
+}
+
+
+
+/* ---------------- SCHEDULE SYSTEM ---------------- */
+
+function canManageSchedule(){
+  return ["admin","manager"].includes(currentProfile?.role);
+}
+
+function scheduleDirtyCount(){
+  return scheduleDrafts.size + scheduleDeletes.size;
+}
+
+function hasScheduleDirty(){
+  return scheduleDirtyCount() > 0;
+}
+
+function clearScheduleDrafts(){
+  scheduleDrafts.clear();
+  scheduleDeletes.clear();
+  updateScheduleSaveState();
+}
+
+window.addEventListener("beforeunload", e=>{
+  if(hasScheduleDirty()){
+    e.preventDefault();
+    e.returnValue = "";
+  }
+});
+
+function userColor(userId){
+  const u = users.find(x=>x.uid===userId);
+  if(u?.color) return u.color;
+
+  const palette = ["#2563eb","#dc2626","#16a34a","#9333ea","#ea580c","#0891b2","#db2777","#4f46e5","#65a30d","#b45309","#0f766e","#7c3aed"];
+  let h=0;
+  for(const c of String(userId||"")) h=((h<<5)-h)+c.charCodeAt(0);
+  return palette[Math.abs(h)%palette.length];
+}
+
+function activeBranches(){
+  return branches.filter(b=>b.active!==false)
+    .sort((a,b)=>(Number(a.sortOrder)||9999)-(Number(b.sortOrder)||9999));
+}
+
+function activeScheduleUsers(){
+  return users.filter(u=>u.active!==false)
+    .sort((a,b)=>String(a.name||a.username||"").localeCompare(String(b.name||b.username||"")));
+}
+
+function scheduleBranchName(branchId){
+  const b = branches.find(x=>x.id===branchId || x.branchId===branchId);
+  return b ? (b.branchName || b.branchId || b.id) : (branchId || "-");
+}
+
+function scheduleHours(start,end){
+  if(!start || !end) return 0;
+
+  const cv = value=>{
+    const [h,m] = String(value).split(":").map(Number);
+    return (h||0) + (m||0)/60;
+  };
+
+  return Math.max(0, cv(end)-cv(start));
+}
+
+function scheduleDateLabel(date){
+  try{
+    return new Date(`${date}T12:00:00`).toLocaleDateString("th-TH",{
+      weekday:"short",day:"numeric",month:"short"
+    });
+  }catch(e){
+    return date;
+  }
+}
+
+/* ----- MY SCHEDULE ----- */
+
+$("myScheduleMonth")?.addEventListener("change", ()=>startMyScheduleMonth($("myScheduleMonth").value));
+
+function ensureMyScheduleMonth(){
+  const el = $("myScheduleMonth");
+  if(!el) return;
+  if(!el.value) el.value = bangkokYearMonth();
+  startMyScheduleMonth(el.value);
+}
+
+function startMyScheduleMonth(ym){
+  if(!currentUser || !ym) return;
+  if(unsubscribeMySchedule){ unsubscribeMySchedule(); unsubscribeMySchedule=null; }
+
+  const q = query(
+    collection(db,"schedules"),
+    where("yearMonth","==",ym),
+    where("userId","==",currentUser.uid)
+  );
+
+  unsubscribeMySchedule = onSnapshot(
+    q,
+    snap=>{
+      mySchedules = snap.docs
+        .map(d=>({id:d.id,...d.data()}))
+        .filter(s=>s.deleted!==true)
+        .sort((a,b)=>String(a.date||"").localeCompare(String(b.date||"")) || String(a.startTime||"").localeCompare(String(b.startTime||"")));
+      renderMySchedule();
+    },
+    err=>{
+      console.error(err);
+      toast("โหลดตารางเวรไม่สำเร็จ",true);
+    }
+  );
+}
+
+function renderMySchedule(){
+  const host = $("myScheduleList");
+  if(!host) return;
+
+  const hours = mySchedules.reduce((sum,s)=>sum+(s.isOff?0:scheduleHours(s.startTime,s.endTime)),0);
+  const day = mySchedules.filter(s=>!s.isOff && s.startTime==="08:00" && s.endTime==="16:00").length;
+  const evening = mySchedules.filter(s=>!s.isOff && s.startTime==="16:00" && s.endTime==="24:00").length;
+  const ad = mySchedules.filter(s=>!s.isOff && s.startTime==="09:00" && s.endTime==="24:00").length;
+  const off = mySchedules.filter(s=>s.isOff).length;
+
+  $("myScheduleSummary").innerHTML = `
+    <span class="info-pill">รวม ${hours} ชม.</span>
+    <span class="info-pill">เช้า ${day}</span>
+    <span class="info-pill">บ่าย ${evening}</span>
+    <span class="info-pill">AD ${ad}</span>
+    <span class="info-pill">OFF ${off}</span>
+  `;
+
+  if(!mySchedules.length){
+    host.innerHTML = `<div class="schedule-empty">ยังไม่มีตารางเวรในเดือนนี้</div>`;
+    return;
+  }
+
+  host.innerHTML = mySchedules.map(s=>`
+    <div class="my-shift" style="--u:${userColor(s.userId)}">
+      <div class="my-shift-date">${escapeHtml(scheduleDateLabel(s.date))}</div>
+      <div class="my-shift-main">
+        <div class="my-shift-time">${s.isOff ? "OFF" : `${escapeHtml(s.startTime)}-${escapeHtml(s.endTime)}`}</div>
+        <div>${escapeHtml(scheduleBranchName(s.branchId))}</div>
+        ${s.note ? `<div class="my-shift-note">${escapeHtml(s.note)}</div>` : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
+/* ----- MANAGER MATRIX ----- */
+
+$("manageScheduleMonth")?.addEventListener("change", e=>{
+  const next = e.target.value;
+  if(hasScheduleDirty()){
+    if(!confirm(`มี ${scheduleDirtyCount()} รายการที่ยังไม่ได้บันทึก\\nเปลี่ยนเดือนโดยทิ้งรายการเหล่านี้หรือไม่?`)){
+      e.target.value = manageScheduleMonthValue;
+      return;
+    }
+    clearScheduleDrafts();
+  }
+  startManageScheduleMonth(next);
+});
+
+$("saveScheduleAllBtn")?.addEventListener("click", saveAllSchedules);
+
+function ensureManageScheduleMonth(){
+  if(!canManageSchedule()) return;
+
+  const el = $("manageScheduleMonth");
+  if(!el) return;
+  if(!el.value) el.value = manageScheduleMonthValue || bangkokYearMonth();
+
+  if(manageScheduleMonthValue!==el.value || !unsubscribeManageSchedule){
+    startManageScheduleMonth(el.value);
+  }else{
+    renderScheduleMatrix();
+  }
+}
+
+function startManageScheduleMonth(ym){
+  if(!canManageSchedule() || !ym) return;
+
+  manageScheduleMonthValue = ym;
+
+  if(unsubscribeManageSchedule){ unsubscribeManageSchedule(); unsubscribeManageSchedule=null; }
+  if(unsubscribeManageRequests){ unsubscribeManageRequests(); unsubscribeManageRequests=null; }
+
+  manageScheduleBase = [];
+  manageScheduleRequests = [];
+  clearScheduleDrafts();
+
+  const sq = query(collection(db,"schedules"),where("yearMonth","==",ym));
+  unsubscribeManageSchedule = onSnapshot(
+    sq,
+    snap=>{
+      manageScheduleBase = snap.docs
+        .map(d=>({id:d.id,...d.data()}))
+        .filter(s=>s.deleted!==true);
+      renderScheduleMatrix();
+      renderScheduleSummary();
+    },
+    err=>{
+      console.error(err);
+      toast("โหลดตารางเวรสำหรับจัดตารางไม่สำเร็จ",true);
+    }
+  );
+
+  const rq = query(collection(db,"requests"),where("yearMonth","==",ym));
+  unsubscribeManageRequests = onSnapshot(
+    rq,
+    snap=>{
+      manageScheduleRequests = snap.docs
+        .map(d=>({id:d.id,...d.data()}))
+        .filter(r=>r.status==="active")
+        .sort((a,b)=>String(a.date||"").localeCompare(String(b.date||"")) || (Number(a.queueNo)||0)-(Number(b.queueNo)||0));
+      renderScheduleMatrix();
+    },
+    err=>{
+      console.error(err);
+      toast("โหลด Request สำหรับหน้าจัดเวรไม่สำเร็จ",true);
+    }
+  );
+
+  renderScheduleLegend();
+  renderScheduleMatrix();
+  renderScheduleSummary();
+}
+
+function mergedSchedules(){
+  const map = new Map(manageScheduleBase.map(s=>[s.id,{...s}]));
+
+  for(const [id,draft] of scheduleDrafts.entries()){
+    map.set(id,{...draft});
+  }
+
+  for(const id of scheduleDeletes){
+    map.delete(id);
+  }
+
+  return [...map.values()].filter(s=>s.deleted!==true);
+}
+
+function renderScheduleLegend(){
+  const host = $("scheduleUserLegend");
+  if(!host) return;
+
+  host.innerHTML = activeScheduleUsers().map(u=>`
+    <span class="schedule-legend-item" style="--u:${escapeAttr(userColor(u.uid))}">
+      ${escapeHtml(u.name||u.username)}
+    </span>
+  `).join("");
+}
+
+function coveragePercent(date,branchId,schedules){
+  const list = schedules.filter(s=>s.date===date && s.branchId===branchId && !s.isOff);
+  let covered=0;
+
+  for(let h=8;h<24;h++){
+    const ok = list.some(s=>{
+      const sh = Number(String(s.startTime||"0:00").split(":")[0]);
+      const eh = Number(String(s.endTime||"0:00").split(":")[0]);
+      return sh<=h && eh>h;
+    });
+    if(ok) covered++;
+  }
+
+  return Math.round((covered/16)*100);
+}
+
+function renderScheduleMatrix(){
+  const host = $("scheduleMatrixHost");
+  if(!host || !canManageSchedule()) return;
+
+  renderScheduleLegend();
+
+  const ym = $("manageScheduleMonth")?.value || manageScheduleMonthValue || bangkokYearMonth();
+  const dates = monthDates(ym);
+  const bList = activeBranches();
+  const schedules = mergedSchedules();
+
+  const reqByDate = {};
+  manageScheduleRequests.forEach(r=>(reqByDate[r.date] ??= []).push(r));
+
+  const head = `
+    <thead>
+      <tr>
+        <th class="date-col">วันที่</th>
+        ${bList.map(b=>`
+          <th class="schedule-branch-head">
+            ${escapeHtml(b.branchName||b.branchId||b.id)}
+            <small>${escapeHtml(b.branchId||b.id)}</small>
+          </th>
+        `).join("")}
+        <th class="schedule-request-col">REQUEST</th>
+      </tr>
+    </thead>
+  `;
+
+  const body = dates.map(date=>{
+    const weekday = new Date(`${date}T12:00:00`).toLocaleDateString("th-TH",{weekday:"short"});
+    return `
+      <tr>
+        <td class="date-col">${Number(date.slice(-2))}<br><span class="muted">${escapeHtml(weekday)}</span></td>
+
+        ${bList.map(b=>{
+          const cell = schedules
+            .filter(s=>s.date===date && s.branchId===b.id)
+            .sort((a,b)=>String(a.startTime||"").localeCompare(String(b.startTime||"")));
+          const coverage = coveragePercent(date,b.id,schedules);
+
+          return `
+            <td>
+              ${cell.map(s=>`
+                <div
+                  class="schedule-shift ${s.isOff ? "off":""} ${scheduleDrafts.has(s.id) ? "dirty":""}"
+                  style="--u:${escapeAttr(userColor(s.userId))};background:${escapeAttr(userColor(s.userId))}18"
+                  data-schedule-edit="${escapeAttr(s.id)}">
+                  <b>${escapeHtml(s.userName||"")}</b>
+                  ${s.isOff ? "OFF" : `${escapeHtml(s.startTime)}-${escapeHtml(s.endTime)}`}
+                </div>
+              `).join("")}
+
+              <button class="schedule-add" data-schedule-add-date="${date}" data-schedule-add-branch="${escapeAttr(b.id)}">+ เพิ่มเวร</button>
+              <div class="schedule-coverage" title="Coverage ${coverage}%"><i style="width:${coverage}%"></i></div>
+            </td>
+          `;
+        }).join("")}
+
+        <td class="schedule-request-col">
+          ${(reqByDate[date]||[]).map(r=>`
+            <div class="schedule-request">
+              <b>คิว ${escapeHtml(r.queueNo)} · ${escapeHtml(r.userName||"")}</b><br>
+              ${escapeHtml(r.requestText||"")}
+            </div>
+          `).join("")}
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  host.innerHTML = `<div class="schedule-matrix-wrap"><table class="schedule-matrix">${head}<tbody>${body}</tbody></table></div>`;
+
+  host.querySelectorAll("[data-schedule-add-date]").forEach(btn=>{
+    btn.addEventListener("click", ()=>openScheduleModal(null,btn.dataset.scheduleAddDate,btn.dataset.scheduleAddBranch));
+  });
+
+  host.querySelectorAll("[data-schedule-edit]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const s = mergedSchedules().find(x=>x.id===btn.dataset.scheduleEdit);
+      if(s) openScheduleModal(s);
+    });
+  });
+
+  updateScheduleSaveState();
+}
+
+function renderScheduleSummary(){
+  const host = $("scheduleSummaryGrid");
+  if(!host || !canManageSchedule()) return;
+
+  const schedules = mergedSchedules();
+  const ym = $("manageScheduleMonth")?.value || manageScheduleMonthValue;
+
+  host.innerHTML = activeScheduleUsers().map(u=>{
+    const list = schedules.filter(s=>s.userId===u.uid && s.yearMonth===ym);
+
+    const hours = list.reduce((sum,s)=>sum+(s.isOff?0:scheduleHours(s.startTime,s.endTime)),0);
+    const day = list.filter(s=>!s.isOff && s.startTime==="08:00" && s.endTime==="16:00").length;
+    const evening = list.filter(s=>!s.isOff && s.startTime==="16:00" && s.endTime==="24:00").length;
+    const ad = list.filter(s=>!s.isOff && s.startTime==="09:00" && s.endTime==="24:00").length;
+    const off = list.filter(s=>s.isOff).length;
+
+    return `
+      <div class="schedule-stat" style="--u:${escapeAttr(userColor(u.uid))}">
+        <b>${escapeHtml(u.name||u.username)}</b>
+        <div>${hours} ชม.</div>
+        <div class="muted">เช้า ${day} · บ่าย ${evening} · AD ${ad} · OFF ${off}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function openScheduleModal(schedule=null,date="",branchId=""){
+  if(!canManageSchedule()) return;
+
+  const editing = !!schedule;
+  const scheduleUsers = activeScheduleUsers();
+  const bList = activeBranches();
+
+  const userOptions = scheduleUsers.map(u=>`
+    <option value="${escapeAttr(u.uid)}" ${schedule?.userId===u.uid ? "selected":""}>
+      ${escapeHtml(u.name||u.username)}
+    </option>
+  `).join("");
+
+  const branchOptions = bList.map(b=>`
+    <option value="${escapeAttr(b.id)}" ${(schedule?.branchId||branchId)===b.id ? "selected":""}>
+      ${escapeHtml(b.branchName||b.branchId||b.id)}
+    </option>
+  `).join("");
+
+  $("modalHost").innerHTML = `
+    <div class="modal-backdrop" id="scheduleBackdrop">
+      <div class="modal">
+        <div class="page-head">
+          <div>
+            <h2>${editing ? "แก้ไขเวร":"เพิ่มเวร"}</h2>
+            <div class="muted">${escapeHtml(schedule?.date || date)}</div>
+          </div>
+        </div>
+
+        <div class="modal-grid">
+          <div>
+            <label>พนักงาน</label>
+            <select id="mScheduleUser">${userOptions}</select>
+          </div>
+
+          <div>
+            <label>สาขา</label>
+            <select id="mScheduleBranch">${branchOptions}</select>
+          </div>
+
+          <div>
+            <label>เวลาเริ่ม</label>
+            <input id="mScheduleStart" type="time" value="${escapeAttr(schedule?.startTime || "08:00")}">
+          </div>
+
+          <div>
+            <label>เวลาจบ</label>
+            <input id="mScheduleEnd" value="${escapeAttr(schedule?.endTime || "16:00")}" placeholder="16:00 หรือ 24:00">
+          </div>
+        </div>
+
+        <label class="checkbox-row">
+          <input id="mScheduleOff" type="checkbox" ${schedule?.isOff ? "checked":""}>
+          OFF / วันหยุด
+        </label>
+
+        <label>หมายเหตุ</label>
+        <input id="mScheduleNote" value="${escapeAttr(schedule?.note || "")}" placeholder="ถ้ามี">
+
+        <div class="actions">
+          ${editing ? `<button id="deleteSchedule" class="btn danger">ลบ</button>`:""}
+          <button id="cancelSchedule" class="btn ghost">ยกเลิก</button>
+          <button id="stageSchedule" class="btn primary">${editing ? "ตกลง":"เพิ่มลงตาราง"}</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const toggleTimes = ()=>{
+    const off = $("mScheduleOff").checked;
+    $("mScheduleStart").disabled = off;
+    $("mScheduleEnd").disabled = off;
+  };
+  toggleTimes();
+
+  $("mScheduleOff").addEventListener("change",toggleTimes);
+  $("cancelSchedule").addEventListener("click",closeModal);
+  $("scheduleBackdrop").addEventListener("click",e=>{if(e.target.id==="scheduleBackdrop") closeModal();});
+  $("stageSchedule").addEventListener("click",()=>stageSchedule(schedule,schedule?.date||date));
+  $("deleteSchedule")?.addEventListener("click",()=>stageDeleteSchedule(schedule));
+}
+
+function stageSchedule(existing,date){
+  const userId = $("mScheduleUser")?.value || "";
+  const branchId = $("mScheduleBranch")?.value || "";
+  const startTime = $("mScheduleStart")?.value || "";
+  const endTime = $("mScheduleEnd")?.value.trim() || "";
+  const isOff = $("mScheduleOff")?.checked===true;
+  const note = $("mScheduleNote")?.value.trim() || "";
+
+  const u = users.find(x=>x.uid===userId);
+
+  if(!userId || !u){
+    toast("กรุณาเลือกพนักงาน",true);
+    return;
+  }
+  if(!branchId){
+    toast("กรุณาเลือกสาขา",true);
+    return;
+  }
+  if(!isOff && (!startTime || !endTime)){
+    toast("กรุณาระบุเวลาเริ่มและเวลาจบ",true);
+    return;
+  }
+  if(!isOff && scheduleHours(startTime,endTime)<=0){
+    toast("เวลาจบต้องมากกว่าเวลาเริ่ม",true);
+    return;
+  }
+
+  let id = existing?.id;
+  if(!id){
+    id = doc(collection(db,"schedules")).id;
+  }
+
+  const draft = {
+    id,
+    yearMonth: date.slice(0,7),
+    date,
+    branchId,
+    userId,
+    userName: u.name || u.username,
+    startTime: isOff ? "" : startTime,
+    endTime: isOff ? "" : endTime,
+    isOff,
+    note,
+    deleted:false,
+    _isNew: existing?._isNew===true || !manageScheduleBase.some(s=>s.id===id)
+  };
+
+  scheduleDeletes.delete(id);
+  scheduleDrafts.set(id,draft);
+
+  closeModal();
+  renderScheduleMatrix();
+  renderScheduleSummary();
+  updateScheduleSaveState();
+}
+
+function stageDeleteSchedule(schedule){
+  if(!schedule) return;
+
+  if(!confirm(`ลบเวรของ ${schedule.userName} วันที่ ${schedule.date}?`)) return;
+
+  const existsOnServer = manageScheduleBase.some(s=>s.id===schedule.id);
+
+  if(existsOnServer){
+    scheduleDrafts.delete(schedule.id);
+    scheduleDeletes.add(schedule.id);
+  }else{
+    scheduleDrafts.delete(schedule.id);
+    scheduleDeletes.delete(schedule.id);
+  }
+
+  closeModal();
+  renderScheduleMatrix();
+  renderScheduleSummary();
+  updateScheduleSaveState();
+}
+
+function updateScheduleSaveState(){
+  const n = scheduleDirtyCount();
+  const btn = $("saveScheduleAllBtn");
+  const state = $("scheduleSaveState");
+
+  if(btn) btn.disabled = n===0;
+
+  if(state){
+    state.textContent = n ? `ยังไม่บันทึก ${n} รายการ` : "บันทึกแล้ว";
+    state.classList.toggle("unsaved", n>0);
+  }
+}
+
+async function saveAllSchedules(){
+  if(!canManageSchedule() || !hasScheduleDirty()) return;
+
+  const count = scheduleDirtyCount();
+  showLoading(true,`กำลังบันทึก ${count} รายการ...`);
+
+  try{
+    const batch = writeBatch(db);
+
+    for(const [id,s] of scheduleDrafts.entries()){
+      const ref = doc(db,"schedules",id);
+
+      const payload = {
+        yearMonth:s.yearMonth,
+        date:s.date,
+        branchId:s.branchId,
+        userId:s.userId,
+        userName:s.userName,
+        startTime:s.startTime,
+        endTime:s.endTime,
+        isOff:s.isOff,
+        note:s.note,
+        deleted:false,
+        updatedAt:serverTimestamp(),
+        updatedBy:currentUser.uid
+      };
+
+      if(s._isNew) payload.createdAt = serverTimestamp();
+
+      batch.set(ref,payload,{merge:true});
+    }
+
+    for(const id of scheduleDeletes){
+      const ref = doc(db,"schedules",id);
+      batch.set(ref,{
+        deleted:true,
+        deletedAt:serverTimestamp(),
+        updatedAt:serverTimestamp(),
+        updatedBy:currentUser.uid
+      },{merge:true});
+    }
+
+    await batch.commit();
+
+    clearScheduleDrafts();
+    toast(`บันทึกตารางเวรแล้ว ${count} รายการ`);
+
+  }catch(err){
+    console.error(err);
+    toast(err.message || "บันทึกตารางเวรไม่สำเร็จ",true);
   }finally{
     showLoading(false);
   }
