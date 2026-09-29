@@ -1,4 +1,4 @@
-import { auth, db, firebaseConfig } from "./firebase.js?v=6.0.0";
+import { auth, db, firebaseConfig } from "./firebase.js?v=7.0.0";
 
 import {
   signInWithEmailAndPassword,
@@ -66,6 +66,7 @@ let unsubscribeMyChangeRequests = null;
 let unsubscribePendingChangeRequests = null;
 let myChangeRequests = [];
 let pendingChangeRequests = [];
+let lastScheduleValidation = { errors:[], warnings:[], shiftFlags:new Map(), cellFlags:new Map() };
 
 let currentView = "dashboard";
 
@@ -976,6 +977,9 @@ function renderScheduleMatrix(){
   const dates = monthDates(ym);
   const bList = activeBranches();
   const schedules = mergedSchedules();
+  lastScheduleValidation=validateSchedule(schedules);
+  renderScheduleValidationPanel();
+  renderValidationCount();
 
   const reqByDate = {};
   manageScheduleRequests.forEach(r=>(reqByDate[r.date] ??= []).push(r));
@@ -1007,12 +1011,15 @@ function renderScheduleMatrix(){
             .sort((a,b)=>String(a.startTime||"").localeCompare(String(b.startTime||"")));
           const coverage = coveragePercent(date,b.id,schedules);
 
+          const cellFlag=lastScheduleValidation.cellFlags.get(`${date}__${b.id}`);
+          const coverageClass=coverage<50 ? "coverage-bad" : coverage<100 ? "coverage-mid" : "";
+
           return `
-            <td>
+            <td class="${cellFlag?.severity==="error" ? "schedule-cell-error" : cellFlag?.severity==="warn" ? "schedule-cell-warning" : ""}" title="${escapeAttr((cellFlag?.messages||[]).join(" | "))}">
               ${cell.map(s=>`
                 <div
-                  class="schedule-shift ${s.isOff ? "off":""} ${scheduleDrafts.has(s.id) ? "dirty":""}"
-                  style="--u:${escapeAttr(userColor(s.userId))};background:${escapeAttr(userColor(s.userId))}18"
+                  class="schedule-shift ${s.isOff ? "off":""} ${scheduleDrafts.has(s.id) ? "dirty":""} ${lastScheduleValidation.shiftFlags.get(s.id)?.severity==="error" ? "validation-error" : lastScheduleValidation.shiftFlags.get(s.id)?.severity==="warn" ? "validation-warn" : ""}"
+                  title="${escapeAttr((lastScheduleValidation.shiftFlags.get(s.id)?.messages||[]).join(" | "))}" style="--u:${escapeAttr(userColor(s.userId))};background:${escapeAttr(userColor(s.userId))}18"
                   data-schedule-edit="${escapeAttr(s.id)}">
                   <b>${escapeHtml(s.userName||"")}</b>
                   ${s.isOff ? "OFF" : `${escapeHtml(s.startTime)}-${escapeHtml(s.endTime)}`}
@@ -1020,7 +1027,7 @@ function renderScheduleMatrix(){
               `).join("")}
 
               <button class="schedule-add" data-schedule-add-date="${date}" data-schedule-add-branch="${escapeAttr(b.id)}">+ เพิ่มเวร</button>
-              <div class="schedule-coverage" title="Coverage ${coverage}%"><i style="width:${coverage}%"></i></div>
+              <div class="schedule-coverage ${coverageClass}" title="Coverage ${coverage}%"><i style="width:${coverage}%"></i></div>
             </td>
           `;
         }).join("")}
@@ -1254,6 +1261,21 @@ function updateScheduleSaveState(){
 async function saveAllSchedules(){
   if(!canManageSchedule() || !hasScheduleDirty()) return;
 
+  const validation=refreshScheduleValidation();
+  const issueCount=validation.errors.length+validation.warnings.length;
+
+  if(issueCount){
+    const msg=[
+      `พบรายการที่ต้องตรวจสอบ ${issueCount} รายการ`,
+      validation.errors.length?`• ปัญหาสำคัญ ${validation.errors.length} รายการ`:"",
+      validation.warnings.length?`• คำเตือน ${validation.warnings.length} รายการ`:"",
+      "",
+      "ต้องการบันทึกต่อแม้มีคำเตือนหรือไม่?"
+    ].filter(Boolean).join("\n");
+
+    if(!confirm(msg)) return;
+  }
+
   const count = scheduleDirtyCount();
   showLoading(true,`กำลังบันทึก ${count} รายการ...`);
 
@@ -1307,6 +1329,211 @@ async function saveAllSchedules(){
 }
 
 
+
+
+/* ---------------- SCHEDULE VALIDATION V7 ---------------- */
+
+function timeToMinutes(value){
+  if(!value) return null;
+  const [hRaw,mRaw="0"] = String(value).split(":");
+  const h=Number(hRaw), m=Number(mRaw);
+  if(!Number.isFinite(h)||!Number.isFinite(m)||h<0||h>24||m<0||m>59||(h===24&&m!==0)) return null;
+  return h*60+m;
+}
+
+function addShiftFlag(map,id,severity,message){
+  if(!id) return;
+  const item=map.get(id)||{severity:null,messages:[]};
+  if(item.severity!=="error"&&severity==="error") item.severity="error";
+  else if(!item.severity) item.severity=severity;
+  item.messages.push(message);
+  map.set(id,item);
+}
+
+function addCellFlag(map,date,branchId,severity,message){
+  const key=`${date}__${branchId}`;
+  const item=map.get(key)||{severity:null,messages:[]};
+  if(item.severity!=="error"&&severity==="error") item.severity="error";
+  else if(!item.severity) item.severity=severity;
+  item.messages.push(message);
+  map.set(key,item);
+}
+
+function compressHourRanges(hours){
+  if(!hours.length) return [];
+  const out=[];
+  let start=hours[0], prev=hours[0];
+
+  for(let i=1;i<=hours.length;i++){
+    const cur=hours[i];
+    if(cur===prev+1){
+      prev=cur;
+      continue;
+    }
+    out.push(`${String(start).padStart(2,"0")}:00-${String(prev+1).padStart(2,"0")}:00`);
+    start=cur;
+    prev=cur;
+  }
+  return out;
+}
+
+function validateSchedule(schedules){
+  const errors=[],warnings=[],shiftFlags=new Map(),cellFlags=new Map();
+  const ym=$("manageScheduleMonth")?.value||manageScheduleMonthValue||bangkokYearMonth();
+
+  // Basic time checks + unusually long shifts.
+  for(const s of schedules){
+    if(s.isOff) continue;
+
+    const st=timeToMinutes(s.startTime), en=timeToMinutes(s.endTime);
+    if(st===null||en===null||en<=st){
+      const msg=`${s.userName} ${s.date}: เวลา ${s.startTime||"-"}-${s.endTime||"-"} ไม่ถูกต้อง`;
+      errors.push({message:msg});
+      addShiftFlag(shiftFlags,s.id,"error",msg);
+      continue;
+    }
+
+    const hours=(en-st)/60;
+    if(hours>15){
+      const msg=`${s.userName} ${s.date}: เวรยาว ${hours.toFixed(1)} ชม. (>15 ชม.)`;
+      warnings.push({message:msg});
+      addShiftFlag(shiftFlags,s.id,"warn",msg);
+    }
+  }
+
+  // User/day conflicts.
+  const byUserDate={};
+  for(const s of schedules){
+    (byUserDate[`${s.userId}__${s.date}`]??=[]).push(s);
+  }
+
+  for(const list of Object.values(byUserDate)){
+    if(list.length<2) continue;
+
+    const hasOff=list.some(s=>s.isOff);
+    const hasWork=list.some(s=>!s.isOff);
+
+    if(hasOff&&hasWork){
+      const msg=`${list[0].userName} ${list[0].date}: มีทั้ง OFF และเวรทำงานในวันเดียวกัน`;
+      errors.push({message:msg});
+      list.forEach(s=>addShiftFlag(shiftFlags,s.id,"error",msg));
+    }
+
+    const work=list.filter(s=>!s.isOff);
+    for(let i=0;i<work.length;i++){
+      for(let j=i+1;j<work.length;j++){
+        const a=work[i],b=work[j];
+        const as=timeToMinutes(a.startTime),ae=timeToMinutes(a.endTime);
+        const bs=timeToMinutes(b.startTime),be=timeToMinutes(b.endTime);
+        if(as===null||ae===null||bs===null||be===null) continue;
+
+        if(Math.max(as,bs)<Math.min(ae,be)){
+          const msg=`${a.userName} ${a.date}: เวรซ้อน ${a.startTime}-${a.endTime} (${scheduleBranchName(a.branchId)}) กับ ${b.startTime}-${b.endTime} (${scheduleBranchName(b.branchId)})`;
+          errors.push({message:msg});
+          addShiftFlag(shiftFlags,a.id,"error",msg);
+          addShiftFlag(shiftFlags,b.id,"error",msg);
+          addCellFlag(cellFlags,a.date,a.branchId,"error",msg);
+          addCellFlag(cellFlags,b.date,b.branchId,"error",msg);
+        }
+
+        if(a.branchId===b.branchId&&a.startTime===b.startTime&&a.endTime===b.endTime){
+          const msg=`${a.userName} ${a.date}: มีเวรซ้ำรายการเดียวกัน`;
+          errors.push({message:msg});
+          addShiftFlag(shiftFlags,a.id,"error",msg);
+          addShiftFlag(shiftFlags,b.id,"error",msg);
+        }
+      }
+    }
+  }
+
+  // Coverage 08:00-24:00. This is a warning, so Manager can override.
+  for(const date of monthDates(ym)){
+    for(const b of activeBranches()){
+      const list=schedules.filter(s=>s.date===date&&s.branchId===b.id&&!s.isOff);
+      const uncovered=[];
+
+      for(let h=8;h<24;h++){
+        const slotStart=h*60, slotEnd=(h+1)*60;
+        const covered=list.some(s=>{
+          const st=timeToMinutes(s.startTime),en=timeToMinutes(s.endTime);
+          return st!==null&&en!==null&&st<=slotStart&&en>=slotEnd;
+        });
+        if(!covered) uncovered.push(h);
+      }
+
+      if(uncovered.length){
+        const msg=`${date} · ${scheduleBranchName(b.id)}: Coverage ไม่ครบ (${compressHourRanges(uncovered).join(", ")})`;
+        warnings.push({message:msg});
+        addCellFlag(cellFlags,date,b.id,"warn",msg);
+      }
+    }
+  }
+
+  return {errors,warnings,shiftFlags,cellFlags};
+}
+
+function refreshScheduleValidation(){
+  lastScheduleValidation=validateSchedule(mergedSchedules());
+  renderScheduleValidationPanel();
+  renderValidationCount();
+  return lastScheduleValidation;
+}
+
+function renderValidationCount(){
+  const badge=$("validationCount");
+  if(!badge) return;
+
+  const n=lastScheduleValidation.errors.length+lastScheduleValidation.warnings.length;
+  badge.textContent=String(n);
+  badge.classList.toggle("hidden",n===0);
+}
+
+function renderScheduleValidationPanel(forceOpen=false){
+  const host=$("scheduleValidationPanel");
+  if(!host) return;
+
+  const {errors,warnings}=lastScheduleValidation;
+  const total=errors.length+warnings.length;
+
+  if(!total&&!forceOpen){
+    host.classList.add("hidden");
+    host.innerHTML="";
+    return;
+  }
+
+  host.classList.remove("hidden");
+  const preview=[
+    ...errors.map(x=>({...x,severity:"error"})),
+    ...warnings.map(x=>({...x,severity:"warn"}))
+  ].slice(0,30);
+
+  host.innerHTML=`
+    <div class="validation-head">
+      <div class="validation-title">ผลตรวจสอบตารางเวร</div>
+      <div class="validation-badges">
+        ${total===0?`<span class="validation-badge ok">ไม่พบปัญหา</span>`:""}
+        ${errors.length?`<span class="validation-badge error">ต้องตรวจ ${errors.length}</span>`:""}
+        ${warnings.length?`<span class="validation-badge warn">เตือน ${warnings.length}</span>`:""}
+      </div>
+    </div>
+
+    ${preview.length?`
+      <div class="validation-list">
+        ${preview.map(x=>`<div class="validation-item ${x.severity}">${escapeHtml(x.message)}</div>`).join("")}
+        ${total>preview.length?`<div class="muted" style="font-size:10px">และอีก ${total-preview.length} รายการ</div>`:""}
+      </div>
+    `:""}
+  `;
+}
+
+$("validateScheduleBtn")?.addEventListener("click",()=>{
+  refreshScheduleValidation();
+  renderScheduleValidationPanel(true);
+
+  if(lastScheduleValidation.errors.length+lastScheduleValidation.warnings.length===0){
+    toast("ตรวจสอบแล้ว ไม่พบปัญหา");
+  }
+});
 
 /* ---------------- CHANGE REQUEST SYSTEM ---------------- */
 
