@@ -1,0 +1,242 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function activeUser() {
+      return signedIn()
+        && myProfile().data.active == true;
+    }
+
+    function isAdmin() {
+      return activeUser()
+        && myProfile().data.role == "admin";
+    }
+
+    function isManager() {
+      return activeUser()
+        && (
+          myProfile().data.role == "admin" ||
+          myProfile().data.role == "manager"
+        );
+    }
+
+    function settingsPath(ym) {
+      return /databases/$(database)/documents/settings/$("requestRules_" + ym);
+    }
+
+    function dayPath(date) {
+      return /databases/$(database)/documents/requestDays/$(date);
+    }
+
+    function usagePath(ym, uid) {
+      return /databases/$(database)/documents/requestUsage/$((ym + "__" + uid));
+    }
+
+    function ownRequestPath(date) {
+      return /databases/$(database)/documents/requests/$((date + "__" + request.auth.uid));
+    }
+
+    function beforeDayCount(date) {
+      return exists(dayPath(date)) ? get(dayPath(date)).data.activeCount : 0;
+    }
+
+    function beforeDayQueue(date) {
+      return exists(dayPath(date)) ? get(dayPath(date)).data.nextQueue : 0;
+    }
+
+    function beforeUsageCount(ym, uid) {
+      return exists(usagePath(ym, uid)) ? get(usagePath(ym, uid)).data.activeCount : 0;
+    }
+
+    function dayLimitAllows(ym, count) {
+      return !exists(settingsPath(ym))
+        || get(settingsPath(ym)).data.dayLimit == null
+        || count <= get(settingsPath(ym)).data.dayLimit;
+    }
+
+    function userLimitAllows(ym, uid, count) {
+      return !exists(settingsPath(ym))
+        || get(settingsPath(ym)).data.userMonthMax == null
+        || count <= get(settingsPath(ym)).data.userMonthMax;
+    }
+
+    function activationIsAtomic(data) {
+      return getAfter(dayPath(data.date)).data.activeCount == beforeDayCount(data.date) + 1
+        && getAfter(dayPath(data.date)).data.nextQueue == beforeDayQueue(data.date) + 1
+        && data.queueNo == getAfter(dayPath(data.date)).data.nextQueue
+        && getAfter(usagePath(data.yearMonth, data.userId)).data.activeCount
+             == beforeUsageCount(data.yearMonth, data.userId) + 1
+        && dayLimitAllows(data.yearMonth, getAfter(dayPath(data.date)).data.activeCount)
+        && userLimitAllows(
+             data.yearMonth,
+             data.userId,
+             getAfter(usagePath(data.yearMonth, data.userId)).data.activeCount
+           );
+    }
+
+    function deletionIsAtomic(oldData, newData) {
+      return oldData.status == "active"
+        && newData.status == "deleted"
+        && newData.userId == oldData.userId
+        && newData.date == oldData.date
+        && newData.yearMonth == oldData.yearMonth
+        && newData.queueNo == oldData.queueNo
+        && getAfter(dayPath(oldData.date)).data.activeCount
+             == beforeDayCount(oldData.date) - 1
+        && getAfter(dayPath(oldData.date)).data.nextQueue
+             == beforeDayQueue(oldData.date)
+        && getAfter(usagePath(oldData.yearMonth, oldData.userId)).data.activeCount
+             == beforeUsageCount(oldData.yearMonth, oldData.userId) - 1;
+    }
+
+    // USERS
+    match /users/{userId} {
+      allow read: if activeUser();
+
+      allow create, delete: if isAdmin();
+
+      allow update: if isAdmin()
+        || (
+          activeUser()
+          && request.auth.uid == userId
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.active == resource.data.active
+        );
+    }
+
+    // BRANCH MASTER
+    match /branches/{branchId} {
+      allow read: if activeUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // SETTINGS
+    match /settings/{settingId} {
+      allow read: if activeUser();
+      allow create, update, delete: if isManager();
+    }
+
+    // SCHEDULE
+    match /schedules/{scheduleId} {
+      allow read: if activeUser();
+      allow create, update, delete: if isManager();
+    }
+
+    // REQUEST
+    match /requests/{requestId} {
+      allow read: if activeUser();
+
+      allow create: if activeUser()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == "active"
+        && requestId == request.resource.data.date + "__" + request.auth.uid
+        && activationIsAtomic(request.resource.data);
+
+      allow update: if activeUser()
+        && (
+          (
+            resource.data.status == "deleted"
+            && request.resource.data.status == "active"
+            && request.resource.data.userId == request.auth.uid
+            && requestId == request.resource.data.date + "__" + request.auth.uid
+            && activationIsAtomic(request.resource.data)
+          )
+          ||
+          (
+            (resource.data.userId == request.auth.uid || isManager())
+            && deletionIsAtomic(resource.data, request.resource.data)
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // REQUEST DAY COUNTER
+    match /requestDays/{date} {
+      allow read: if activeUser();
+
+      allow create: if activeUser()
+        && request.resource.data.activeCount == 1
+        && request.resource.data.nextQueue == 1
+        && getAfter(ownRequestPath(date)).data.status == "active"
+        && getAfter(ownRequestPath(date)).data.queueNo == 1;
+
+      allow update: if isManager()
+        || (
+          activeUser()
+          && (
+            (
+              request.resource.data.activeCount == resource.data.activeCount + 1
+              && request.resource.data.nextQueue == resource.data.nextQueue + 1
+              && getAfter(ownRequestPath(date)).data.status == "active"
+              && getAfter(ownRequestPath(date)).data.queueNo == request.resource.data.nextQueue
+            )
+            ||
+            (
+              request.resource.data.activeCount == resource.data.activeCount - 1
+              && request.resource.data.nextQueue == resource.data.nextQueue
+              && getAfter(ownRequestPath(date)).data.status == "deleted"
+            )
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // REQUEST MONTHLY USAGE
+    match /requestUsage/{usageId} {
+      allow read: if activeUser();
+
+      allow create: if activeUser()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.activeCount == 1;
+
+      allow update: if isManager()
+        || (
+          activeUser()
+          && resource.data.userId == request.auth.uid
+          && request.resource.data.userId == request.auth.uid
+          && (
+            request.resource.data.activeCount == resource.data.activeCount + 1
+            || request.resource.data.activeCount == resource.data.activeCount - 1
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // CHANGE REQUEST
+    match /changeRequests/{requestId} {
+      allow read: if activeUser();
+
+      allow create: if activeUser()
+        && request.resource.data.userId == request.auth.uid;
+
+      allow update, delete: if isManager()
+        || (
+          activeUser()
+          && resource.data.userId == request.auth.uid
+        );
+    }
+
+    // AUDIT LOG
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if activeUser();
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=K2D:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="./app.css?v=3.0.0">
+  <link rel="stylesheet" href="./app.css?v=4.0.0">
 </head>
 <body>
   <div id="loading" class="loading hidden">
@@ -39,7 +39,7 @@
       </form>
 
       <div id="loginError" class="error"></div>
-      <div class="build">Build V3.0.0</div>
+      <div class="build">Build V4.0.0</div>
     </section>
   </main>
 
@@ -63,6 +63,7 @@
     <div class="layout">
       <aside id="sidebar" class="sidebar">
         <button class="nav-item active" data-view="dashboard">หน้าหลัก</button>
+        <button id="requestNav" class="nav-item" data-view="requests">ขอรีเควส</button>
         <button id="branchNav" class="nav-item hidden" data-view="branches">จัดการสาขา</button>
         <button id="userNav" class="nav-item hidden" data-view="users">จัดการ User</button>
       </aside>
@@ -101,6 +102,31 @@
             </div>
             <button id="goBranchBtn" class="btn primary">จัดการสาขา</button>
           </div>
+        </section>
+
+
+        <!-- REQUEST SYSTEM -->
+        <section id="requestsView" class="view hidden">
+          <div class="page-head request-head">
+            <div>
+              <h1>Request วัน / เวร</h1>
+              <p class="muted">แสดงคิวแบบ Realtime ตามเวลาที่ส่งในแต่ละวัน</p>
+            </div>
+
+            <div class="request-actions">
+              <input id="requestMonth" type="month">
+              <button id="requestRuleBtn" class="btn ghost hidden">กำหนด Request Limit</button>
+            </div>
+          </div>
+
+          <div class="request-info">
+            <span id="dayLimitBadge" class="info-pill">Limit/วัน: -</span>
+            <span id="userMaxBadge" class="info-pill">สิทธิ์/คน/เดือน: -</span>
+            <span id="myUsageBadge" class="info-pill">ใช้แล้ว: 0 วัน</span>
+            <span class="muted request-tip">ทุกคนเห็น Request ของวันนั้น และคิวเรียงตามเวลาที่ส่ง</span>
+          </div>
+
+          <div id="requestCalendar" class="request-calendar"></div>
         </section>
 
         <!-- BRANCH MASTER -->
@@ -198,6 +224,6 @@
   <!-- MODAL -->
   <div id="modalHost"></div>
 
-  <script type="module" src="./app.js?v=3.0.0"></script>
+  <script type="module" src="./app.js?v=4.0.0"></script>
 </body>
 </html>

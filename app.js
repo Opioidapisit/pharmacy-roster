@@ -1,4 +1,4 @@
-import { auth, db, firebaseConfig } from "./firebase.js?v=3.0.0";
+import { auth, db, firebaseConfig } from "./firebase.js?v=4.0.0";
 
 import {
   signInWithEmailAndPassword,
@@ -20,7 +20,10 @@ import {
   collection,
   onSnapshot,
   setDoc,
-  serverTimestamp
+  serverTimestamp,
+  query,
+  where,
+  runTransaction
 } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
 
 const $ = id => document.getElementById(id);
@@ -42,12 +45,17 @@ let branches = [];
 let users = [];
 let unsubscribeBranches = null;
 let unsubscribeUsers = null;
+let unsubscribeRequests = null;
+let unsubscribeRequestRules = null;
+let requests = [];
+let requestRules = { dayLimit:null, userMonthMax:null };
+let currentRequestMonth = "";
 let currentView = "dashboard";
 
 const REQUIRED_V21 = [
   "loading","loadingText","toast","loginView","appView","topUser","roleBadge",
   "dashName","dashUsername","dashRole","branchNav","branchSearch","branchStatus",
-  "branchRows","branchTableWrap","branchEmpty","userRows","userTableWrap","userEmpty","modalHost"
+  "branchRows","branchTableWrap","branchEmpty","userRows","userTableWrap","userEmpty","requestCalendar","requestMonth","modalHost"
 ];
 const missingV21 = REQUIRED_V21.filter(id=>!$(id));
 if(missingV21.length){
@@ -83,6 +91,10 @@ function setNav(view){
   currentView = view;
   document.querySelectorAll(".nav-item").forEach(b=>b.classList.toggle("active", b.dataset.view===view));
   if(view==="dashboard") showOnly("dashboardView");
+  if(view==="requests"){
+    showOnly("requestsView");
+    ensureRequestMonth();
+  }
   if(view==="branches") showOnly("branchesView");
   if(view==="users") showOnly("usersView");
   $("sidebar").classList.remove("open");
@@ -121,6 +133,8 @@ onAuthStateChanged(auth, async user=>{
     currentProfile = null;
     if(unsubscribeBranches){ unsubscribeBranches(); unsubscribeBranches=null; }
     if(unsubscribeUsers){ unsubscribeUsers(); unsubscribeUsers=null; }
+    if(unsubscribeRequests){ unsubscribeRequests(); unsubscribeRequests=null; }
+    if(unsubscribeRequestRules){ unsubscribeRequestRules(); unsubscribeRequestRules=null; }
     $("appView").classList.add("hidden");
     $("loginView").classList.remove("hidden");
     $("password").value = "";
@@ -152,6 +166,9 @@ onAuthStateChanged(auth, async user=>{
     $("userNav").classList.toggle("hidden", !isAdmin);
     $("adminQuick").classList.toggle("hidden", !isAdmin);
 
+    const canManageRequests = ["admin","manager"].includes(profile.role);
+    $("requestRuleBtn")?.classList.toggle("hidden", !canManageRequests);
+
     setNav("dashboard");
     if(isAdmin){
       startBranchListener();
@@ -166,6 +183,460 @@ onAuthStateChanged(auth, async user=>{
     showLoading(false);
   }
 });
+
+
+/* ---------------- REQUEST SYSTEM ---------------- */
+
+function bangkokYearMonth(){
+  return new Date().toLocaleDateString("en-CA", { timeZone:"Asia/Bangkok" }).slice(0,7);
+}
+
+function ensureRequestMonth(){
+  const monthInput = $("requestMonth");
+  if(!monthInput) return;
+
+  if(!monthInput.value) monthInput.value = currentRequestMonth || bangkokYearMonth();
+  const ym = monthInput.value;
+
+  if(currentRequestMonth !== ym || !unsubscribeRequests){
+    startRequestMonth(ym);
+  }else{
+    renderRequestCalendar();
+  }
+}
+
+$("requestMonth")?.addEventListener("change", ()=>{
+  const ym = $("requestMonth").value;
+  if(ym) startRequestMonth(ym);
+});
+
+$("requestRuleBtn")?.addEventListener("click", openRequestRulesModal);
+
+function startRequestMonth(ym){
+  currentRequestMonth = ym;
+
+  if(unsubscribeRequests){ unsubscribeRequests(); unsubscribeRequests=null; }
+  if(unsubscribeRequestRules){ unsubscribeRequestRules(); unsubscribeRequestRules=null; }
+
+  requests = [];
+  requestRules = { dayLimit:null, userMonthMax:null };
+  renderRequestCalendar();
+
+  const q = query(
+    collection(db, "requests"),
+    where("yearMonth", "==", ym)
+  );
+
+  unsubscribeRequests = onSnapshot(
+    q,
+    snap=>{
+      requests = snap.docs
+        .map(d=>({ id:d.id, ...d.data() }))
+        .filter(r=>r.status==="active")
+        .sort((a,b)=>
+          String(a.date||"").localeCompare(String(b.date||"")) ||
+          (Number(a.queueNo)||0)-(Number(b.queueNo)||0)
+        );
+      renderRequestCalendar();
+    },
+    err=>{
+      console.error(err);
+      toast("โหลด Request ไม่สำเร็จ", true);
+    }
+  );
+
+  const rulesRef = doc(db, "settings", `requestRules_${ym}`);
+  unsubscribeRequestRules = onSnapshot(
+    rulesRef,
+    snap=>{
+      if(snap.exists()){
+        const d = snap.data();
+        requestRules = {
+          dayLimit: numberOrNull(d.dayLimit),
+          userMonthMax: numberOrNull(d.userMonthMax)
+        };
+      }else{
+        requestRules = { dayLimit:null, userMonthMax:null };
+      }
+      renderRequestCalendar();
+    },
+    err=>{
+      console.error(err);
+      toast("โหลด Request Limit ไม่สำเร็จ", true);
+    }
+  );
+}
+
+function numberOrNull(v){
+  if(v===null || v===undefined || v==="") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function monthDates(ym){
+  if(!/^\d{4}-\d{2}$/.test(ym)) return [];
+  const [y,m] = ym.split("-").map(Number);
+  const days = new Date(y,m,0).getDate();
+  return Array.from({length:days},(_,i)=>`${ym}-${String(i+1).padStart(2,"0")}`);
+}
+
+function formatRequestTime(ts){
+  if(!ts) return "";
+  try{
+    const d = ts.toDate ? ts.toDate() : new Date(ts);
+    return d.toLocaleTimeString("th-TH",{hour:"2-digit",minute:"2-digit"});
+  }catch(e){ return ""; }
+}
+
+function myMonthlyUsage(){
+  return new Set(
+    requests
+      .filter(r=>r.userId===currentUser?.uid && r.status==="active")
+      .map(r=>r.date)
+  ).size;
+}
+
+function renderRequestCalendar(){
+  const host = $("requestCalendar");
+  if(!host || !currentProfile) return;
+
+  const ym = $("requestMonth")?.value || currentRequestMonth || bangkokYearMonth();
+  const dates = monthDates(ym);
+  const firstDay = dates.length ? new Date(`${dates[0]}T12:00:00`).getDay() : 0;
+
+  setText("dayLimitBadge", `Limit/วัน: ${requestRules.dayLimit===null ? "ไม่จำกัด" : requestRules.dayLimit}`);
+  setText("userMaxBadge", `สิทธิ์/คน/เดือน: ${requestRules.userMonthMax===null ? "ไม่จำกัด" : requestRules.userMonthMax}`);
+  setText("myUsageBadge", `ใช้แล้ว: ${myMonthlyUsage()} วัน`);
+
+  const byDate = {};
+  requests.forEach(r=>(byDate[r.date] ??= []).push(r));
+
+  const cells = [];
+  for(let i=0;i<firstDay;i++) cells.push(`<div class="request-day out"></div>`);
+
+  for(const date of dates){
+    const list = (byDate[date] || []).slice().sort((a,b)=>(Number(a.queueNo)||0)-(Number(b.queueNo)||0));
+    const dayLimit = requestRules.dayLimit;
+    const full = dayLimit !== null && list.length >= dayLimit;
+    const mine = list.find(r=>r.userId===currentUser.uid);
+    const maxUsed = requestRules.userMonthMax !== null && myMonthlyUsage() >= requestRules.userMonthMax;
+    const canAdd = !full && !mine && !maxUsed;
+    const canManage = ["admin","manager"].includes(currentProfile.role);
+    const dayNo = Number(date.slice(-2));
+
+    cells.push(`
+      <div class="request-day">
+        <div class="request-date">
+          <span>${dayNo}</span>
+          <span class="request-count ${full ? "full":""}">
+            ${dayLimit===null ? list.length : `${list.length}/${dayLimit}`}
+          </span>
+        </div>
+
+        ${list.map(r=>`
+          <div class="req-card ${r.userId===currentUser.uid ? "mine":""}">
+            <div class="req-top">
+              <span class="req-queue">คิว ${escapeHtml(r.queueNo)} · ${escapeHtml(r.userName||"")}</span>
+              ${(r.userId===currentUser.uid || canManage) ? `<button class="req-delete" data-request-delete="${escapeAttr(r.id)}" title="ลบ Request">×</button>`:""}
+            </div>
+            <div>${escapeHtml(r.requestText||"")}</div>
+            <div class="req-time">${escapeHtml(formatRequestTime(r.createdAt))}</div>
+          </div>
+        `).join("")}
+
+        <button class="req-add" data-request-add="${date}" ${canAdd ? "" : "disabled"}>
+          ${mine ? "มี Request แล้ว" : full ? "เต็มแล้ว" : maxUsed ? "ใช้สิทธิ์ครบแล้ว" : "+ ขอรีเควส"}
+        </button>
+      </div>
+    `);
+  }
+
+  host.innerHTML = `
+    ${["อา","จ","อ","พ","พฤ","ศ","ส"].map(x=>`<div class="request-dow">${x}</div>`).join("")}
+    ${cells.join("")}
+  `;
+
+  host.querySelectorAll("[data-request-add]").forEach(btn=>{
+    btn.addEventListener("click", ()=>openRequestModal(btn.dataset.requestAdd));
+  });
+
+  host.querySelectorAll("[data-request-delete]").forEach(btn=>{
+    btn.addEventListener("click", ()=>deleteRequestById(btn.dataset.requestDelete));
+  });
+}
+
+function openRequestModal(date){
+  if(!currentUser || !currentProfile) return;
+
+  $("modalHost").innerHTML = `
+    <div class="modal-backdrop" id="requestBackdrop">
+      <div class="modal">
+        <div class="page-head">
+          <div>
+            <h2>ขอ Request</h2>
+            <div class="muted">${escapeHtml(date)}</div>
+          </div>
+        </div>
+
+        <label>รายละเอียด</label>
+        <div class="preset-row">
+          <button type="button" class="preset" data-preset="ขอหยุด">ขอหยุด</button>
+          <button type="button" class="preset" data-preset="ขอเข้าเช้า">ขอเข้าเช้า</button>
+          <button type="button" class="preset" data-preset="ขอเข้าบ่าย">ขอเข้าบ่าย</button>
+          <button type="button" class="preset" data-preset="ขอเข้า AD">ขอเข้า AD</button>
+        </div>
+
+        <input id="mRequestText" placeholder="เช่น ขอหยุด / ขอเข้าเช้า / ขอเข้าบ่าย">
+
+        <div id="requestResult"></div>
+
+        <div class="actions">
+          <button id="cancelRequest" class="btn ghost">ยกเลิก</button>
+          <button id="saveRequest" class="btn primary">ส่ง Request</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $("cancelRequest").addEventListener("click", closeModal);
+  $("requestBackdrop").addEventListener("click", e=>{ if(e.target.id==="requestBackdrop") closeModal(); });
+  document.querySelectorAll("[data-preset]").forEach(btn=>{
+    btn.addEventListener("click", ()=>$("mRequestText").value=btn.dataset.preset);
+  });
+  $("saveRequest").addEventListener("click", ()=>submitRequestTransaction(date));
+  $("mRequestText")?.focus();
+}
+
+async function submitRequestTransaction(date){
+  const text = $("mRequestText")?.value.trim() || "";
+  if(!text){
+    toast("กรุณาระบุรายละเอียด Request", true);
+    return;
+  }
+
+  const ym = date.slice(0,7);
+  const requestId = `${date}__${currentUser.uid}`;
+  const requestRef = doc(db, "requests", requestId);
+  const dayRef = doc(db, "requestDays", date);
+  const usageRef = doc(db, "requestUsage", `${ym}__${currentUser.uid}`);
+  const rulesRef = doc(db, "settings", `requestRules_${ym}`);
+
+  showLoading(true, "กำลังจัดลำดับคิว...");
+
+  try{
+    const queueNo = await runTransaction(db, async tx=>{
+      const requestSnap = await tx.get(requestRef);
+      const daySnap = await tx.get(dayRef);
+      const usageSnap = await tx.get(usageRef);
+      const ruleSnap = await tx.get(rulesRef);
+
+      if(requestSnap.exists() && requestSnap.data().status==="active"){
+        throw new Error("คุณมี Request ในวันนี้แล้ว");
+      }
+
+      const ruleData = ruleSnap.exists() ? ruleSnap.data() : {};
+      const dayLimit = numberOrNull(ruleData.dayLimit);
+      const userMonthMax = numberOrNull(ruleData.userMonthMax);
+
+      const dayData = daySnap.exists() ? daySnap.data() : {};
+      const usageData = usageSnap.exists() ? usageSnap.data() : {};
+
+      const activeCount = Number(dayData.activeCount)||0;
+      const nextQueue = Number(dayData.nextQueue)||0;
+      const userActiveCount = Number(usageData.activeCount)||0;
+
+      if(dayLimit !== null && activeCount >= dayLimit){
+        throw new Error(`วันที่ ${date} Request เต็มแล้ว (${dayLimit} คน)`);
+      }
+
+      if(userMonthMax !== null && userActiveCount >= userMonthMax){
+        throw new Error(`คุณใช้สิทธิ์ Request ครบ ${userMonthMax} วันในเดือนนี้แล้ว`);
+      }
+
+      const queue = nextQueue + 1;
+
+      tx.set(requestRef, {
+        yearMonth: ym,
+        date,
+        userId: currentUser.uid,
+        userName: currentProfile.name || currentProfile.username,
+        requestText: text,
+        queueNo: queue,
+        status: "active",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      tx.set(dayRef, {
+        date,
+        activeCount: activeCount + 1,
+        nextQueue: queue,
+        updatedAt: serverTimestamp()
+      }, { merge:true });
+
+      tx.set(usageRef, {
+        yearMonth: ym,
+        userId: currentUser.uid,
+        activeCount: userActiveCount + 1,
+        updatedAt: serverTimestamp()
+      }, { merge:true });
+
+      return queue;
+    });
+
+    const result = $("requestResult");
+    if(result){
+      result.innerHTML = `<div class="request-queue-success">ส่ง Request สำเร็จ — คุณได้คิวที่ <b>${queueNo}</b></div>`;
+    }
+    toast(`ส่ง Request แล้ว — คิวที่ ${queueNo}`);
+    setTimeout(closeModal, 650);
+
+  }catch(err){
+    console.error(err);
+    toast(err.message || "ส่ง Request ไม่สำเร็จ", true);
+  }finally{
+    showLoading(false);
+  }
+}
+
+async function deleteRequestById(requestId){
+  const r = requests.find(x=>x.id===requestId);
+  if(!r) return;
+
+  const canManage = ["admin","manager"].includes(currentProfile.role);
+  if(r.userId!==currentUser.uid && !canManage){
+    toast("ไม่มีสิทธิ์ลบ Request นี้", true);
+    return;
+  }
+
+  if(!confirm(`ลบ Request คิว ${r.queueNo} ของ ${r.userName}?`)) return;
+
+  const requestRef = doc(db, "requests", requestId);
+  const dayRef = doc(db, "requestDays", r.date);
+  const usageRef = doc(db, "requestUsage", `${r.yearMonth}__${r.userId}`);
+
+  showLoading(true, "กำลังลบ Request...");
+
+  try{
+    await runTransaction(db, async tx=>{
+      const reqSnap = await tx.get(requestRef);
+      const daySnap = await tx.get(dayRef);
+      const usageSnap = await tx.get(usageRef);
+
+      if(!reqSnap.exists() || reqSnap.data().status!=="active") return;
+
+      const dayData = daySnap.exists() ? daySnap.data() : {};
+      const usageData = usageSnap.exists() ? usageSnap.data() : {};
+
+      tx.set(requestRef, {
+        status:"deleted",
+        deletedAt:serverTimestamp(),
+        updatedAt:serverTimestamp()
+      }, { merge:true });
+
+      tx.set(dayRef, {
+        activeCount: Math.max(0,(Number(dayData.activeCount)||0)-1),
+        nextQueue: Number(dayData.nextQueue)||Number(r.queueNo)||0,
+        updatedAt:serverTimestamp()
+      }, { merge:true });
+
+      tx.set(usageRef, {
+        activeCount: Math.max(0,(Number(usageData.activeCount)||0)-1),
+        updatedAt:serverTimestamp()
+      }, { merge:true });
+    });
+
+    toast("ลบ Request แล้ว");
+  }catch(err){
+    console.error(err);
+    toast(err.message || "ลบ Request ไม่สำเร็จ", true);
+  }finally{
+    showLoading(false);
+  }
+}
+
+function openRequestRulesModal(){
+  if(!["admin","manager"].includes(currentProfile?.role)){
+    toast("เฉพาะ Admin / Manager เท่านั้น", true);
+    return;
+  }
+
+  const ym = $("requestMonth")?.value || currentRequestMonth || bangkokYearMonth();
+
+  $("modalHost").innerHTML = `
+    <div class="modal-backdrop" id="requestRuleBackdrop">
+      <div class="modal">
+        <div class="page-head">
+          <div>
+            <h2>Request Limit</h2>
+            <div class="muted">${escapeHtml(ym)}</div>
+          </div>
+        </div>
+
+        <div class="modal-grid">
+          <div>
+            <label>จำนวน Request สูงสุดต่อวัน</label>
+            <input id="mDayLimit" type="number" min="0" value="${requestRules.dayLimit ?? ""}" placeholder="ว่าง = ไม่จำกัด">
+          </div>
+
+          <div>
+            <label>จำนวนวันสูงสุดต่อ User / เดือน</label>
+            <input id="mUserMax" type="number" min="0" value="${requestRules.userMonthMax ?? ""}" placeholder="ว่าง = ไม่จำกัด">
+          </div>
+        </div>
+
+        <div class="password-note">เว้นว่าง = ไม่จำกัด</div>
+
+        <div class="actions">
+          <button id="cancelRequestRule" class="btn ghost">ยกเลิก</button>
+          <button id="saveRequestRule" class="btn primary">บันทึก</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $("cancelRequestRule").addEventListener("click", closeModal);
+  $("requestRuleBackdrop").addEventListener("click", e=>{ if(e.target.id==="requestRuleBackdrop") closeModal(); });
+  $("saveRequestRule").addEventListener("click", saveRequestRules);
+}
+
+async function saveRequestRules(){
+  if(!["admin","manager"].includes(currentProfile?.role)) return;
+
+  const ym = $("requestMonth")?.value || currentRequestMonth;
+  const rawDay = $("mDayLimit")?.value ?? "";
+  const rawUser = $("mUserMax")?.value ?? "";
+
+  const dayLimit = rawDay==="" ? null : Number(rawDay);
+  const userMonthMax = rawUser==="" ? null : Number(rawUser);
+
+  if(dayLimit !== null && (!Number.isInteger(dayLimit) || dayLimit < 0)){
+    toast("Limit/วัน ไม่ถูกต้อง", true); return;
+  }
+  if(userMonthMax !== null && (!Number.isInteger(userMonthMax) || userMonthMax < 0)){
+    toast("สิทธิ์/คน/เดือน ไม่ถูกต้อง", true); return;
+  }
+
+  showLoading(true, "กำลังบันทึก Request Limit...");
+  try{
+    await setDoc(doc(db, "settings", `requestRules_${ym}`), {
+      yearMonth: ym,
+      dayLimit,
+      userMonthMax,
+      updatedAt: serverTimestamp(),
+      updatedBy: currentUser.uid
+    }, { merge:true });
+
+    closeModal();
+    toast("บันทึก Request Limit แล้ว");
+  }catch(err){
+    console.error(err);
+    toast(err.message || "บันทึกไม่สำเร็จ", true);
+  }finally{
+    showLoading(false);
+  }
+}
+
 
 /* ---------------- BRANCH MASTER ---------------- */
 
