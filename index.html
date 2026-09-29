@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Pharmacy Roster</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=K2D:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./css/app.css">
+</head>
+<body>
+  <div id="loading" class="loading"><div class="spinner"></div><span>กำลังเชื่อมต่อ...</span></div>
+
+  <main id="loginView" class="center hidden">
+    <section class="card login-card">
+      <div class="brand">Pharmacy Roster</div>
+      <h1>เข้าสู่ระบบ</h1>
+      <p class="muted">ระบบจัดการตารางเวรพนักงานร้านยา</p>
+      <form id="loginForm">
+        <label>Username</label>
+        <input id="username" autocomplete="username" placeholder="admin" required>
+        <label>Password</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+        <button id="loginBtn" type="submit">เข้าสู่ระบบ</button>
+      </form>
+      <div id="loginError" class="error"></div>
+    </section>
+  </main>
+
+  <main id="appView" class="hidden">
+    <header>
+      <div><b>Pharmacy Roster</b><span class="badge">Firebase</span></div>
+      <button id="logoutBtn" class="secondary">ออกจากระบบ</button>
+    </header>
+    <section class="content">
+      <div class="card">
+        <div class="success">เชื่อมต่อ Firebase สำเร็จ</div>
+        <h1>สวัสดี <span id="displayName"></span></h1>
+        <p>Username: <b id="displayUsername"></b></p>
+        <p>Role: <span id="displayRole" class="role"></span></p>
+        <p class="muted">นี่คือ Dashboard ทดสอบ V1 — Authentication + Firestore profile ทำงานแล้ว</p>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
