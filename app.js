@@ -1,4 +1,4 @@
-import { auth, db, firebaseConfig } from "./firebase.js?v=5.0.0";
+import { auth, db, firebaseConfig } from "./firebase.js?v=6.0.0";
 
 import {
   signInWithEmailAndPassword,
@@ -61,6 +61,11 @@ let manageScheduleRequests = [];
 let scheduleDrafts = new Map();
 let scheduleDeletes = new Set();
 let manageScheduleMonthValue = "";
+
+let unsubscribeMyChangeRequests = null;
+let unsubscribePendingChangeRequests = null;
+let myChangeRequests = [];
+let pendingChangeRequests = [];
 
 let currentView = "dashboard";
 
@@ -167,6 +172,10 @@ onAuthStateChanged(auth, async user=>{
     if(unsubscribeMySchedule){ unsubscribeMySchedule(); unsubscribeMySchedule=null; }
     if(unsubscribeManageSchedule){ unsubscribeManageSchedule(); unsubscribeManageSchedule=null; }
     if(unsubscribeManageRequests){ unsubscribeManageRequests(); unsubscribeManageRequests=null; }
+    if(unsubscribeMyChangeRequests){ unsubscribeMyChangeRequests(); unsubscribeMyChangeRequests=null; }
+    if(unsubscribePendingChangeRequests){ unsubscribePendingChangeRequests(); unsubscribePendingChangeRequests=null; }
+    myChangeRequests = [];
+    pendingChangeRequests = [];
     clearScheduleDrafts();
     $("appView").classList.add("hidden");
     $("loginView").classList.remove("hidden");
@@ -208,6 +217,9 @@ onAuthStateChanged(auth, async user=>{
       startBranchListener();
       startUserListener();
     }
+
+    startMyChangeRequestListener();
+    if(canManageRequests) startPendingChangeRequestListener();
 
   }catch(err){
     console.error(err);
@@ -806,16 +818,32 @@ function renderMySchedule(){
     return;
   }
 
-  host.innerHTML = mySchedules.map(s=>`
-    <div class="my-shift" style="--u:${userColor(s.userId)}">
-      <div class="my-shift-date">${escapeHtml(scheduleDateLabel(s.date))}</div>
-      <div class="my-shift-main">
-        <div class="my-shift-time">${s.isOff ? "OFF" : `${escapeHtml(s.startTime)}-${escapeHtml(s.endTime)}`}</div>
-        <div>${escapeHtml(scheduleBranchName(s.branchId))}</div>
-        ${s.note ? `<div class="my-shift-note">${escapeHtml(s.note)}</div>` : ""}
+  host.innerHTML = mySchedules.map(s=>{
+    const req = latestChangeForSchedule(s.id);
+    const pending = req?.status==="pending";
+
+    return `
+      <div class="my-shift" style="--u:${userColor(s.userId)}">
+        <div class="my-shift-date">${escapeHtml(scheduleDateLabel(s.date))}</div>
+        <div class="my-shift-main">
+          <div class="my-shift-time">${s.isOff ? "OFF" : `${escapeHtml(s.startTime)}-${escapeHtml(s.endTime)}`}</div>
+          <div>${escapeHtml(scheduleBranchName(s.branchId))}</div>
+          ${s.note ? `<div class="my-shift-note">${escapeHtml(s.note)}</div>` : ""}
+          ${req ? `<div style="margin-top:5px"><span class="change-pill ${escapeAttr(req.status)}">${changeStatusLabel(req.status)}</span></div>` : ""}
+        </div>
+        <button class="change-btn" data-my-change="${escapeAttr(s.id)}" ${pending ? "disabled":""}>
+          ${pending ? "รออนุมัติ":"ขอแก้เวร"}
+        </button>
       </div>
-    </div>
-  `).join("");
+    `;
+  }).join("");
+
+  host.querySelectorAll("[data-my-change]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const s = mySchedules.find(x=>x.id===btn.dataset.myChange);
+      if(s) openChangeRequestModal(s);
+    });
+  });
 }
 
 /* ----- MANAGER MATRIX ----- */
@@ -1273,6 +1301,394 @@ async function saveAllSchedules(){
   }catch(err){
     console.error(err);
     toast(err.message || "บันทึกตารางเวรไม่สำเร็จ",true);
+  }finally{
+    showLoading(false);
+  }
+}
+
+
+
+/* ---------------- CHANGE REQUEST SYSTEM ---------------- */
+
+function changeStatusLabel(status){
+  return ({
+    pending:"รออนุมัติ",
+    approved:"อนุมัติแล้ว",
+    rejected:"ไม่อนุมัติ",
+    cancelled:"ยกเลิกแล้ว"
+  })[status] || status || "-";
+}
+
+function latestChangeForSchedule(scheduleId){
+  const list = myChangeRequests
+    .filter(r=>r.scheduleId===scheduleId)
+    .sort((a,b)=>{
+      const ta = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+      const tb = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+      return tb-ta;
+    });
+  return list[0] || null;
+}
+
+function startMyChangeRequestListener(){
+  if(!currentUser) return;
+  if(unsubscribeMyChangeRequests){ unsubscribeMyChangeRequests(); unsubscribeMyChangeRequests=null; }
+
+  const q = query(
+    collection(db,"changeRequests"),
+    where("userId","==",currentUser.uid)
+  );
+
+  unsubscribeMyChangeRequests = onSnapshot(
+    q,
+    snap=>{
+      myChangeRequests = snap.docs.map(d=>({id:d.id,...d.data()}));
+      renderMyChangeRequestInfo();
+      renderMySchedule();
+    },
+    err=>{
+      console.error(err);
+      toast("โหลดคำขอแก้เวรไม่สำเร็จ",true);
+    }
+  );
+}
+
+function renderMyChangeRequestInfo(){
+  const host = $("myChangeRequestInfo");
+  if(!host) return;
+
+  const ym = $("myScheduleMonth")?.value || bangkokYearMonth();
+  const monthList = myChangeRequests.filter(r=>r.yearMonth===ym);
+
+  const pending = monthList.filter(r=>r.status==="pending").length;
+  const approved = monthList.filter(r=>r.status==="approved").length;
+  const rejected = monthList.filter(r=>r.status==="rejected").length;
+
+  host.innerHTML = `
+    <span class="info-pill">คำขอแก้เวร: ${monthList.length}</span>
+    <span class="change-pill pending">รอ ${pending}</span>
+    <span class="change-pill approved">อนุมัติ ${approved}</span>
+    <span class="change-pill rejected">ไม่อนุมัติ ${rejected}</span>
+  `;
+}
+
+function openChangeRequestModal(schedule){
+  if(!schedule || schedule.userId!==currentUser?.uid) return;
+
+  const existing = latestChangeForSchedule(schedule.id);
+  if(existing?.status==="pending"){
+    toast("เวรนี้มีคำขอที่รออนุมัติอยู่แล้ว",true);
+    return;
+  }
+
+  const branchOptions = activeBranches().map(b=>`
+    <option value="${escapeAttr(b.id)}" ${b.id===schedule.branchId ? "selected":""}>
+      ${escapeHtml(b.branchName||b.branchId||b.id)}
+    </option>
+  `).join("");
+
+  $("modalHost").innerHTML = `
+    <div class="modal-backdrop" id="changeBackdrop">
+      <div class="modal">
+        <div class="page-head">
+          <div>
+            <h2>ขอแก้ไขเวร</h2>
+            <div class="muted">${escapeHtml(scheduleDateLabel(schedule.date))}</div>
+          </div>
+        </div>
+
+        <div class="change-box">
+          <b>เวรเดิม</b>
+          ${schedule.isOff ? "OFF" : `${escapeHtml(schedule.startTime)}-${escapeHtml(schedule.endTime)}`}
+          · ${escapeHtml(scheduleBranchName(schedule.branchId))}
+        </div>
+
+        <div class="modal-grid">
+          <div>
+            <label>สาขาที่ต้องการ</label>
+            <select id="mChangeBranch">${branchOptions}</select>
+          </div>
+
+          <div>
+            <label>สถานะ</label>
+            <select id="mChangeMode">
+              <option value="work" ${schedule.isOff ? "":"selected"}>ทำงาน</option>
+              <option value="off" ${schedule.isOff ? "selected":""}>OFF</option>
+            </select>
+          </div>
+
+          <div>
+            <label>เวลาเริ่ม</label>
+            <input id="mChangeStart" type="time" value="${escapeAttr(schedule.startTime || "08:00")}">
+          </div>
+
+          <div>
+            <label>เวลาจบ</label>
+            <input id="mChangeEnd" value="${escapeAttr(schedule.endTime || "16:00")}">
+          </div>
+        </div>
+
+        <label>เหตุผล / หมายเหตุ</label>
+        <input id="mChangeReason" placeholder="เช่น ขอเข้าบ่ายแทน เนื่องจากมีธุระช่วงเช้า">
+
+        <div class="actions">
+          <button id="cancelChangeReq" class="btn ghost">ยกเลิก</button>
+          <button id="submitChangeReq" class="btn primary">ส่งให้ Manager</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const syncMode = ()=>{
+    const off = $("mChangeMode").value==="off";
+    $("mChangeStart").disabled = off;
+    $("mChangeEnd").disabled = off;
+  };
+  syncMode();
+
+  $("mChangeMode").addEventListener("change",syncMode);
+  $("cancelChangeReq").addEventListener("click",closeModal);
+  $("changeBackdrop").addEventListener("click",e=>{ if(e.target.id==="changeBackdrop") closeModal(); });
+  $("submitChangeReq").addEventListener("click",()=>submitChangeRequest(schedule));
+}
+
+async function submitChangeRequest(schedule){
+  if(!schedule || schedule.userId!==currentUser?.uid) return;
+
+  const mode = $("mChangeMode")?.value || "work";
+  const requestedOff = mode==="off";
+  const requestedBranchId = $("mChangeBranch")?.value || schedule.branchId;
+  const requestedStart = requestedOff ? "" : ($("mChangeStart")?.value || "");
+  const requestedEnd = requestedOff ? "" : ($("mChangeEnd")?.value.trim() || "");
+  const reason = $("mChangeReason")?.value.trim() || "";
+
+  if(!requestedOff && (!requestedStart || !requestedEnd)){
+    toast("กรุณาระบุเวลาเริ่มและจบ",true);
+    return;
+  }
+  if(!requestedOff && scheduleHours(requestedStart,requestedEnd)<=0){
+    toast("เวลาจบต้องมากกว่าเวลาเริ่ม",true);
+    return;
+  }
+
+  // Prevent sending a no-op request.
+  const same =
+    requestedOff===schedule.isOff &&
+    requestedBranchId===schedule.branchId &&
+    (requestedOff || (requestedStart===schedule.startTime && requestedEnd===schedule.endTime));
+
+  if(same){
+    toast("เวรที่ขอเหมือนกับเวรเดิม",true);
+    return;
+  }
+
+  const id = doc(collection(db,"changeRequests")).id;
+
+  showLoading(true,"กำลังส่งคำขอแก้เวร...");
+  try{
+    await setDoc(doc(db,"changeRequests",id),{
+      scheduleId:schedule.id,
+      yearMonth:schedule.yearMonth,
+      date:schedule.date,
+      userId:currentUser.uid,
+      userName:currentProfile.name || currentProfile.username,
+
+      oldBranchId:schedule.branchId,
+      oldStart:schedule.startTime || "",
+      oldEnd:schedule.endTime || "",
+      oldOff:schedule.isOff===true,
+
+      requestedBranchId,
+      requestedStart,
+      requestedEnd,
+      requestedOff,
+
+      reason,
+      status:"pending",
+      createdAt:serverTimestamp(),
+      updatedAt:serverTimestamp()
+    });
+
+    closeModal();
+    toast("ส่งคำขอแก้เวรแล้ว");
+  }catch(err){
+    console.error(err);
+    toast(err.message || "ส่งคำขอแก้เวรไม่สำเร็จ",true);
+  }finally{
+    showLoading(false);
+  }
+}
+
+function startPendingChangeRequestListener(){
+  if(!canManageSchedule()) return;
+  if(unsubscribePendingChangeRequests){ unsubscribePendingChangeRequests(); unsubscribePendingChangeRequests=null; }
+
+  const q = query(
+    collection(db,"changeRequests"),
+    where("status","==","pending")
+  );
+
+  unsubscribePendingChangeRequests = onSnapshot(
+    q,
+    snap=>{
+      pendingChangeRequests = snap.docs
+        .map(d=>({id:d.id,...d.data()}))
+        .sort((a,b)=>{
+          const da = String(a.date||"");
+          const dbv = String(b.date||"");
+          if(da!==dbv) return da.localeCompare(dbv);
+          const ta = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+          const tb = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+          return ta-tb;
+        });
+
+      renderPendingChangeCount();
+    },
+    err=>{
+      console.error(err);
+      toast("โหลดคำขอแก้เวรรออนุมัติไม่สำเร็จ",true);
+    }
+  );
+}
+
+function renderPendingChangeCount(){
+  const count = pendingChangeRequests.length;
+  const badge = $("pendingChangesCount");
+  if(!badge) return;
+
+  badge.textContent = String(count);
+  badge.classList.toggle("hidden",count===0);
+}
+
+$("pendingChangesBtn")?.addEventListener("click",openPendingChangesModal);
+
+function openPendingChangesModal(){
+  if(!canManageSchedule()) return;
+
+  const items = pendingChangeRequests;
+
+  $("modalHost").innerHTML = `
+    <div class="modal-backdrop" id="pendingChangesBackdrop">
+      <div class="modal" style="width:min(820px,100%)">
+        <div class="page-head">
+          <div>
+            <h2>คำขอแก้เวรรออนุมัติ</h2>
+            <div class="muted">${items.length} รายการ</div>
+          </div>
+        </div>
+
+        <div class="change-list">
+          ${items.length ? items.map(c=>`
+            <div class="change-card">
+              <div class="change-card-head">
+                <div>
+                  <b>${escapeHtml(c.userName||"")}</b>
+                  <div class="muted">${escapeHtml(scheduleDateLabel(c.date||""))}</div>
+                </div>
+                <span class="change-pill pending">รออนุมัติ</span>
+              </div>
+
+              <div class="change-old-new">
+                <div class="change-box">
+                  <b>เดิม</b>
+                  ${c.oldOff ? "OFF" : `${escapeHtml(c.oldStart||"")}-${escapeHtml(c.oldEnd||"")}`}
+                  · ${escapeHtml(scheduleBranchName(c.oldBranchId))}
+                </div>
+
+                <div class="change-box">
+                  <b>ขอเปลี่ยนเป็น</b>
+                  ${c.requestedOff ? "OFF" : `${escapeHtml(c.requestedStart||"")}-${escapeHtml(c.requestedEnd||"")}`}
+                  · ${escapeHtml(scheduleBranchName(c.requestedBranchId))}
+                </div>
+              </div>
+
+              ${c.reason ? `<div class="change-reason"><b>เหตุผล:</b> ${escapeHtml(c.reason)}</div>`:""}
+
+              <div class="change-actions">
+                <button class="btn danger" data-change-reject="${escapeAttr(c.id)}">Reject</button>
+                <button class="btn primary" data-change-approve="${escapeAttr(c.id)}">Approve</button>
+              </div>
+            </div>
+          `).join("") : `<div class="schedule-empty">ไม่มีคำขอที่รออนุมัติ</div>`}
+        </div>
+
+        <div class="actions">
+          <button id="closePendingChanges" class="btn ghost">ปิด</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $("closePendingChanges").addEventListener("click",closeModal);
+  $("pendingChangesBackdrop").addEventListener("click",e=>{ if(e.target.id==="pendingChangesBackdrop") closeModal(); });
+
+  document.querySelectorAll("[data-change-approve]").forEach(btn=>{
+    btn.addEventListener("click",()=>decideChangeRequest(btn.dataset.changeApprove,"approved"));
+  });
+  document.querySelectorAll("[data-change-reject]").forEach(btn=>{
+    btn.addEventListener("click",()=>decideChangeRequest(btn.dataset.changeReject,"rejected"));
+  });
+}
+
+async function decideChangeRequest(changeId,decision){
+  if(!canManageSchedule()) return;
+
+  const c = pendingChangeRequests.find(x=>x.id===changeId);
+  if(!c) return;
+
+  const actionText = decision==="approved" ? "อนุมัติ" : "ไม่อนุมัติ";
+  if(!confirm(`${actionText}คำขอของ ${c.userName} วันที่ ${c.date}?`)) return;
+
+  showLoading(true,decision==="approved" ? "กำลังอนุมัติและแก้ตารางเวร..." : "กำลัง Reject...");
+
+  try{
+    await runTransaction(db,async tx=>{
+      const changeRef = doc(db,"changeRequests",changeId);
+      const scheduleRef = doc(db,"schedules",c.scheduleId);
+
+      const changeSnap = await tx.get(changeRef);
+      if(!changeSnap.exists()) throw new Error("ไม่พบคำขอแก้เวร");
+
+      const fresh = changeSnap.data();
+      if(fresh.status!=="pending") throw new Error("คำขอนี้ถูกดำเนินการแล้ว");
+
+      if(decision==="approved"){
+        const scheduleSnap = await tx.get(scheduleRef);
+        if(!scheduleSnap.exists()) throw new Error("ไม่พบเวรต้นฉบับ");
+
+        const currentSchedule = scheduleSnap.data();
+        if(currentSchedule.userId!==fresh.userId) throw new Error("User ของคำขอไม่ตรงกับเวร");
+
+        tx.set(scheduleRef,{
+          branchId:fresh.requestedBranchId,
+          startTime:fresh.requestedOff ? "" : fresh.requestedStart,
+          endTime:fresh.requestedOff ? "" : fresh.requestedEnd,
+          isOff:fresh.requestedOff===true,
+          updatedAt:serverTimestamp(),
+          updatedBy:currentUser.uid
+        },{merge:true});
+      }
+
+      tx.set(changeRef,{
+        status:decision,
+        decidedBy:currentUser.uid,
+        decidedByName:currentProfile.name || currentProfile.username,
+        decidedAt:serverTimestamp(),
+        updatedAt:serverTimestamp()
+      },{merge:true});
+    });
+
+    toast(decision==="approved" ? "อนุมัติแล้ว ตารางเวรถูกแก้ไข" : "Reject คำขอแล้ว");
+    closeModal();
+
+    // Reopen refreshed pending list only when items remain.
+    setTimeout(()=>{
+      if(pendingChangeRequests.length) openPendingChangesModal();
+    },250);
+
+  }catch(err){
+    console.error(err);
+    toast(err.message || "ดำเนินการคำขอไม่สำเร็จ",true);
   }finally{
     showLoading(false);
   }

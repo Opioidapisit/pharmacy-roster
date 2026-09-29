@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=K2D:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="./app.css?v=5.0.0">
+  <link rel="stylesheet" href="./app.css?v=6.0.0">
 </head>
 <body>
   <div id="loading" class="loading hidden">
@@ -39,7 +39,7 @@
       </form>
 
       <div id="loginError" class="error"></div>
-      <div class="build">Build V5.0.0</div>
+      <div class="build">Build V6.0.0</div>
     </section>
   </main>
 
@@ -143,6 +143,7 @@
           </div>
 
           <div id="myScheduleSummary" class="schedule-mini-summary"></div>
+          <div id="myChangeRequestInfo" class="schedule-mini-summary"></div>
           <div id="myScheduleList" class="my-schedule-list"></div>
         </section>
 
@@ -156,6 +157,7 @@
 
             <div class="schedule-manager-actions">
               <input id="manageScheduleMonth" type="month" class="month-control">
+              <button id="pendingChangesBtn" class="btn ghost">คำขอแก้เวร <span id="pendingChangesCount" class="mini-count hidden">0</span></button>
               <button id="saveScheduleAllBtn" class="btn primary" disabled>บันทึกทั้งหมด</button>
               <span id="scheduleSaveState" class="info-pill">บันทึกแล้ว</span>
             </div>
@@ -269,6 +271,6 @@
   <!-- MODAL -->
   <div id="modalHost"></div>
 
-  <script type="module" src="./app.js?v=5.0.0"></script>
+  <script type="module" src="./app.js?v=6.0.0"></script>
 </body>
 </html>
