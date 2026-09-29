@@ -1,4 +1,4 @@
-import { auth, db, firebaseConfig } from "./firebase.js?v=7.0.0";
+import { auth, db, firebaseConfig } from "./firebase.js?v=8.0.0";
 
 import {
   signInWithEmailAndPassword,
@@ -6,7 +6,8 @@ import {
   onAuthStateChanged,
   getAuth,
   createUserWithEmailAndPassword,
-  deleteUser
+  deleteUser,
+  updatePassword
 } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-auth.js";
 
 import {
@@ -24,7 +25,8 @@ import {
   query,
   where,
   runTransaction,
-  writeBatch
+  writeBatch,
+  getDocs
 } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
 
 const $ = id => document.getElementById(id);
@@ -67,13 +69,17 @@ let unsubscribePendingChangeRequests = null;
 let myChangeRequests = [];
 let pendingChangeRequests = [];
 let lastScheduleValidation = { errors:[], warnings:[], shiftFlags:new Map(), cellFlags:new Map() };
+let validationDetailsVisible = false;
+
+let auditLogs = [];
+let unsubscribeAudit = null;
 
 let currentView = "dashboard";
 
 const REQUIRED_V21 = [
   "loading","loadingText","toast","loginView","appView","topUser","roleBadge",
   "dashName","dashUsername","dashRole","branchNav","branchSearch","branchStatus",
-  "branchRows","branchTableWrap","branchEmpty","userRows","userTableWrap","userEmpty","requestCalendar","requestMonth","myScheduleList","myScheduleMonth","manageScheduleMonth","scheduleMatrixHost","modalHost"
+  "branchRows","branchTableWrap","branchEmpty","userRows","userTableWrap","userEmpty","requestCalendar","requestMonth","myScheduleList","myScheduleMonth","manageScheduleMonth","scheduleMatrixHost","auditRows","modalHost"
 ];
 const missingV21 = REQUIRED_V21.filter(id=>!$(id));
 if(missingV21.length){
@@ -131,6 +137,11 @@ function setNav(view){
   }
   if(view==="branches") showOnly("branchesView");
   if(view==="users") showOnly("usersView");
+  if(view==="audit"){
+    showOnly("auditView");
+    loadAuditLogs();
+  }
+  if(view==="maintenance") showOnly("maintenanceView");
 
   $("sidebar").classList.remove("open");
 }
@@ -175,6 +186,7 @@ onAuthStateChanged(auth, async user=>{
     if(unsubscribeManageRequests){ unsubscribeManageRequests(); unsubscribeManageRequests=null; }
     if(unsubscribeMyChangeRequests){ unsubscribeMyChangeRequests(); unsubscribeMyChangeRequests=null; }
     if(unsubscribePendingChangeRequests){ unsubscribePendingChangeRequests(); unsubscribePendingChangeRequests=null; }
+    if(unsubscribeAudit){ unsubscribeAudit(); unsubscribeAudit=null; }
     myChangeRequests = [];
     pendingChangeRequests = [];
     clearScheduleDrafts();
@@ -207,6 +219,8 @@ onAuthStateChanged(auth, async user=>{
     const isAdmin = profile.role === "admin";
     $("branchNav").classList.toggle("hidden", !isAdmin);
     $("userNav").classList.toggle("hidden", !isAdmin);
+    $("auditNav")?.classList.toggle("hidden", !isAdmin);
+    $("maintenanceNav")?.classList.toggle("hidden", !isAdmin);
     $("adminQuick").classList.toggle("hidden", !isAdmin);
 
     const canManageRequests = ["admin","manager"].includes(profile.role);
@@ -230,6 +244,220 @@ onAuthStateChanged(auth, async user=>{
     showLoading(false);
   }
 });
+
+
+
+/* ---------------- AUDIT / MAINTENANCE V8 ---------------- */
+
+async function writeAudit(action,target="",detail={}){
+  if(!currentUser || !currentProfile) return;
+  try{
+    const ref=doc(collection(db,"auditLogs"));
+    await setDoc(ref,{
+      actorUid:currentUser.uid,
+      actorName:currentProfile.name || currentProfile.username || "",
+      actorUsername:currentProfile.username || "",
+      actorRole:currentProfile.role || "",
+      action,
+      target:String(target||""),
+      detail,
+      createdAt:serverTimestamp()
+    });
+  }catch(err){
+    console.warn("Audit log failed",err);
+  }
+}
+
+$("changePasswordBtn")?.addEventListener("click",openChangePasswordModal);
+
+function openChangePasswordModal(){
+  $("modalHost").innerHTML=`
+    <div class="modal-backdrop" id="passwordBackdrop">
+      <div class="modal">
+        <div class="page-head">
+          <div>
+            <h2>เปลี่ยนรหัสผ่าน</h2>
+            <div class="muted">${escapeHtml(currentProfile?.username||"")}</div>
+          </div>
+        </div>
+
+        <label>รหัสผ่านใหม่</label>
+        <input id="mNewPassword" type="password" placeholder="อย่างน้อย 6 ตัวอักษร">
+
+        <label>ยืนยันรหัสผ่านใหม่</label>
+        <input id="mNewPassword2" type="password" placeholder="กรอกซ้ำอีกครั้ง">
+
+        <div class="actions">
+          <button id="cancelPassword" class="btn ghost">ยกเลิก</button>
+          <button id="savePassword" class="btn primary">เปลี่ยนรหัสผ่าน</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $("cancelPassword").addEventListener("click",closeModal);
+  $("passwordBackdrop").addEventListener("click",e=>{if(e.target.id==="passwordBackdrop")closeModal();});
+  $("savePassword").addEventListener("click",changeOwnPassword);
+}
+
+async function changeOwnPassword(){
+  const p1=$("mNewPassword")?.value||"";
+  const p2=$("mNewPassword2")?.value||"";
+
+  if(p1.length<6){toast("รหัสผ่านอย่างน้อย 6 ตัวอักษร",true);return;}
+  if(p1!==p2){toast("รหัสผ่านทั้งสองช่องไม่ตรงกัน",true);return;}
+
+  showLoading(true,"กำลังเปลี่ยนรหัสผ่าน...");
+  try{
+    await updatePassword(auth.currentUser,p1);
+    await writeAudit("PASSWORD_CHANGE",currentUser.uid,{username:currentProfile.username});
+    closeModal();
+    toast("เปลี่ยนรหัสผ่านเรียบร้อย");
+  }catch(err){
+    console.error(err);
+    if(err.code==="auth/requires-recent-login"){
+      toast("เพื่อความปลอดภัย กรุณา Logout แล้ว Login ใหม่ก่อนเปลี่ยนรหัสผ่าน",true);
+    }else{
+      toast(err.message||"เปลี่ยนรหัสผ่านไม่สำเร็จ",true);
+    }
+  }finally{
+    showLoading(false);
+  }
+}
+
+$("refreshAuditBtn")?.addEventListener("click",loadAuditLogs);
+$("auditSearch")?.addEventListener("input",renderAuditLogs);
+$("auditActionFilter")?.addEventListener("change",renderAuditLogs);
+
+async function loadAuditLogs(){
+  if(!canAdmin()) return;
+
+  showLoading(true,"กำลังโหลด Audit Log...");
+  try{
+    const snap=await getDocs(collection(db,"auditLogs"));
+    auditLogs=snap.docs.map(d=>({id:d.id,...d.data()}))
+      .sort((a,b)=>{
+        const ta=a.createdAt?.toMillis?a.createdAt.toMillis():0;
+        const tb=b.createdAt?.toMillis?b.createdAt.toMillis():0;
+        return tb-ta;
+      })
+      .slice(0,500);
+    renderAuditLogs();
+  }catch(err){
+    console.error(err);
+    toast("โหลด Audit Log ไม่สำเร็จ",true);
+  }finally{
+    showLoading(false);
+  }
+}
+
+function renderAuditLogs(){
+  const rows=$("auditRows");
+  if(!rows) return;
+
+  const q=$("auditSearch")?.value.trim().toLowerCase()||"";
+  const action=$("auditActionFilter")?.value||"all";
+
+  const list=auditLogs.filter(x=>{
+    const text=`${x.actorName||""} ${x.actorUsername||""} ${x.action||""} ${x.target||""} ${JSON.stringify(x.detail||{})}`.toLowerCase();
+    return (!q||text.includes(q)) && (action==="all"||x.action===action);
+  });
+
+  $("auditEmpty")?.classList.toggle("hidden",list.length!==0);
+  $("auditTableWrap")?.classList.toggle("hidden",list.length===0);
+
+  rows.innerHTML=list.map(x=>`
+    <tr>
+      <td>${escapeHtml(formatAuditTime(x.createdAt))}</td>
+      <td><b>${escapeHtml(x.actorName||x.actorUsername||"")}</b><br><span class="muted">${escapeHtml(x.actorRole||"")}</span></td>
+      <td><span class="role-pill">${escapeHtml(x.action||"")}</span></td>
+      <td>${escapeHtml(x.target||"")}</td>
+      <td><div class="audit-detail">${escapeHtml(JSON.stringify(x.detail||{}))}</div></td>
+    </tr>
+  `).join("");
+}
+
+function formatAuditTime(ts){
+  if(!ts) return "";
+  try{
+    const d=ts.toDate?ts.toDate():new Date(ts);
+    return d.toLocaleString("th-TH",{dateStyle:"short",timeStyle:"short"});
+  }catch(e){return "";}
+}
+
+$("resetOperationalBtn")?.addEventListener("click",openResetOperationalModal);
+
+function openResetOperationalModal(){
+  if(!canAdmin()) return;
+
+  $("modalHost").innerHTML=`
+    <div class="modal-backdrop" id="resetBackdrop">
+      <div class="modal">
+        <div class="page-head">
+          <div>
+            <h2>ล้าง Operational Data</h2>
+            <div class="muted">Users / Branches / Settings / Audit Log จะไม่ถูกลบ</div>
+          </div>
+        </div>
+
+        <div class="maintenance-warning">
+          จะลบข้อมูลใน Schedules, Requests, Request Days, Request Usage และ Change Requests ทั้งหมด
+        </div>
+
+        <label>พิมพ์ RESET เพื่อยืนยัน</label>
+        <input id="mResetConfirm" placeholder="RESET">
+
+        <div class="actions">
+          <button id="cancelReset" class="btn ghost">ยกเลิก</button>
+          <button id="confirmReset" class="btn danger">ล้างข้อมูล</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $("cancelReset").addEventListener("click",closeModal);
+  $("resetBackdrop").addEventListener("click",e=>{if(e.target.id==="resetBackdrop")closeModal();});
+  $("confirmReset").addEventListener("click",resetOperationalData);
+}
+
+async function deleteCollectionInChunks(name){
+  const snap=await getDocs(collection(db,name));
+  const docs=snap.docs;
+  let deleted=0;
+
+  for(let i=0;i<docs.length;i+=400){
+    const batch=writeBatch(db);
+    docs.slice(i,i+400).forEach(d=>batch.delete(d.ref));
+    await batch.commit();
+    deleted+=Math.min(400,docs.length-i);
+  }
+
+  return deleted;
+}
+
+async function resetOperationalData(){
+  if(!canAdmin()) return;
+  if(($("mResetConfirm")?.value||"").trim()!=="RESET"){
+    toast("กรุณาพิมพ์ RESET ให้ถูกต้อง",true);return;
+  }
+
+  showLoading(true,"กำลังล้างข้อมูลทดสอบ...");
+  try{
+    const result={};
+    for(const name of ["schedules","requests","requestDays","requestUsage","changeRequests"]){
+      result[name]=await deleteCollectionInChunks(name);
+    }
+
+    await writeAudit("RESET_OPERATIONAL_DATA","ALL_OPERATIONAL",result);
+    closeModal();
+    toast("ล้าง Operational Data เรียบร้อย");
+  }catch(err){
+    console.error(err);
+    toast(err.message||"ล้างข้อมูลไม่สำเร็จ",true);
+  }finally{
+    showLoading(false);
+  }
+}
 
 
 /* ---------------- REQUEST SYSTEM ---------------- */
@@ -535,6 +763,7 @@ async function submitRequestTransaction(date){
     if(result){
       result.innerHTML = `<div class="request-queue-success">ส่ง Request สำเร็จ — คุณได้คิวที่ <b>${queueNo}</b></div>`;
     }
+    await writeAudit("REQUEST_CREATE",requestId,{date,queueNo,requestText:text});
     toast(`ส่ง Request แล้ว — คิวที่ ${queueNo}`);
     setTimeout(closeModal, 650);
 
@@ -593,6 +822,7 @@ async function deleteRequestById(requestId){
       }, { merge:true });
     });
 
+    await writeAudit("REQUEST_DELETE",requestId,{date:r.date,queueNo:r.queueNo,userId:r.userId});
     toast("ลบ Request แล้ว");
   }catch(err){
     console.error(err);
@@ -674,6 +904,7 @@ async function saveRequestRules(){
       updatedBy: currentUser.uid
     }, { merge:true });
 
+    await writeAudit("REQUEST_RULE_SAVE",ym,{dayLimit,userMonthMax});
     closeModal();
     toast("บันทึก Request Limit แล้ว");
   }catch(err){
@@ -1015,10 +1246,10 @@ function renderScheduleMatrix(){
           const coverageClass=coverage<50 ? "coverage-bad" : coverage<100 ? "coverage-mid" : "";
 
           return `
-            <td class="${cellFlag?.severity==="error" ? "schedule-cell-error" : cellFlag?.severity==="warn" ? "schedule-cell-warning" : ""}" title="${escapeAttr((cellFlag?.messages||[]).join(" | "))}">
+            <td class="${cellFlag?.severity==="error" ? "schedule-cell-error" : (validationDetailsVisible && cellFlag?.severity==="warn") ? "schedule-cell-warning" : ""}" title="${escapeAttr((cellFlag?.messages||[]).join(" | "))}">
               ${cell.map(s=>`
                 <div
-                  class="schedule-shift ${s.isOff ? "off":""} ${scheduleDrafts.has(s.id) ? "dirty":""} ${lastScheduleValidation.shiftFlags.get(s.id)?.severity==="error" ? "validation-error" : lastScheduleValidation.shiftFlags.get(s.id)?.severity==="warn" ? "validation-warn" : ""}"
+                  class="schedule-shift ${s.isOff ? "off":""} ${scheduleDrafts.has(s.id) ? "dirty":""} ${lastScheduleValidation.shiftFlags.get(s.id)?.severity==="error" ? "validation-error" : (validationDetailsVisible && lastScheduleValidation.shiftFlags.get(s.id)?.severity==="warn") ? "validation-warn" : ""}"
                   title="${escapeAttr((lastScheduleValidation.shiftFlags.get(s.id)?.messages||[]).join(" | "))}" style="--u:${escapeAttr(userColor(s.userId))};background:${escapeAttr(userColor(s.userId))}18"
                   data-schedule-edit="${escapeAttr(s.id)}">
                   <b>${escapeHtml(s.userName||"")}</b>
@@ -1483,7 +1714,7 @@ function renderValidationCount(){
   const badge=$("validationCount");
   if(!badge) return;
 
-  const n=lastScheduleValidation.errors.length+lastScheduleValidation.warnings.length;
+  const n=lastScheduleValidation.errors.length;
   badge.textContent=String(n);
   badge.classList.toggle("hidden",n===0);
 }
@@ -1495,7 +1726,8 @@ function renderScheduleValidationPanel(forceOpen=false){
   const {errors,warnings}=lastScheduleValidation;
   const total=errors.length+warnings.length;
 
-  if(!total&&!forceOpen){
+  const shouldShow = forceOpen || errors.length>0 || validationDetailsVisible;
+  if(!shouldShow){
     host.classList.add("hidden");
     host.innerHTML="";
     return;
@@ -1504,7 +1736,7 @@ function renderScheduleValidationPanel(forceOpen=false){
   host.classList.remove("hidden");
   const preview=[
     ...errors.map(x=>({...x,severity:"error"})),
-    ...warnings.map(x=>({...x,severity:"warn"}))
+    ...(validationDetailsVisible || forceOpen ? warnings.map(x=>({...x,severity:"warn"})) : [])
   ].slice(0,30);
 
   host.innerHTML=`
@@ -1527,8 +1759,10 @@ function renderScheduleValidationPanel(forceOpen=false){
 }
 
 $("validateScheduleBtn")?.addEventListener("click",()=>{
+  validationDetailsVisible = !validationDetailsVisible;
   refreshScheduleValidation();
-  renderScheduleValidationPanel(true);
+  renderScheduleValidationPanel(validationDetailsVisible);
+  renderScheduleMatrix();
 
   if(lastScheduleValidation.errors.length+lastScheduleValidation.warnings.length===0){
     toast("ตรวจสอบแล้ว ไม่พบปัญหา");
@@ -1736,6 +1970,7 @@ async function submitChangeRequest(schedule){
       updatedAt:serverTimestamp()
     });
 
+    await writeAudit("CHANGE_REQUEST_CREATE",id,{scheduleId:schedule.id,date:schedule.date});
     closeModal();
     toast("ส่งคำขอแก้เวรแล้ว");
   }catch(err){
@@ -1905,6 +2140,7 @@ async function decideChangeRequest(changeId,decision){
       },{merge:true});
     });
 
+    await writeAudit("CHANGE_REQUEST_DECIDE",changeId,{decision,userId:c.userId,scheduleId:c.scheduleId});
     toast(decision==="approved" ? "อนุมัติแล้ว ตารางเวรถูกแก้ไข" : "Reject คำขอแล้ว");
     closeModal();
 
@@ -2113,6 +2349,7 @@ async function saveBranch(existing){
     if(!existing) payload.createdAt = serverTimestamp();
 
     await setDoc(ref, payload, { merge:true });
+    await writeAudit("BRANCH_SAVE",branchId,{branchName,active,parentBranchId});
     closeModal();
     toast(existing ? "แก้ไขสาขาเรียบร้อย":"เพิ่มสาขาเรียบร้อย");
   }catch(err){
@@ -2334,6 +2571,7 @@ async function saveUser(existing){
         updatedAt: serverTimestamp()
       }, { merge:true });
 
+      await writeAudit("USER_UPDATE",existing.uid,{username,name,role,homeBranch,active});
       closeModal();
       toast("แก้ไข User เรียบร้อย");
     }catch(err){
@@ -2388,6 +2626,7 @@ async function saveUser(existing){
     }
 
     await signOut(secondaryAuth);
+    await writeAudit("USER_CREATE",createdAuthUser.uid,{username,name,role,homeBranch,active});
     closeModal();
     toast(`สร้าง User ${username} เรียบร้อย`);
   }catch(err){

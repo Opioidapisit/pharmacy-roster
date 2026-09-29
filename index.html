@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=K2D:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="./app.css?v=7.0.0">
+  <link rel="stylesheet" href="./app.css?v=8.0.0">
 </head>
 <body>
   <div id="loading" class="loading hidden">
@@ -39,7 +39,7 @@
       </form>
 
       <div id="loginError" class="error"></div>
-      <div class="build">Build V7.0.0</div>
+      <div class="build">Build V8.0.0</div>
     </section>
   </main>
 
@@ -56,6 +56,7 @@
 
       <div class="top-actions">
         <span id="roleBadge" class="badge"></span>
+        <button id="changePasswordBtn" class="btn ghost">เปลี่ยนรหัสผ่าน</button>
         <button id="logoutBtn" class="btn ghost">ออกจากระบบ</button>
       </div>
     </header>
@@ -68,6 +69,8 @@
         <button id="manageScheduleNav" class="nav-item hidden" data-view="manageSchedule">จัดตารางเวร</button>
         <button id="branchNav" class="nav-item hidden" data-view="branches">จัดการสาขา</button>
         <button id="userNav" class="nav-item hidden" data-view="users">จัดการ User</button>
+        <button id="auditNav" class="nav-item hidden" data-view="audit">Audit Log</button>
+        <button id="maintenanceNav" class="nav-item hidden" data-view="maintenance">Maintenance</button>
       </aside>
 
       <main class="main-content">
@@ -266,6 +269,80 @@
             </table>
           </div>
         </section>
+
+        <!-- AUDIT LOG -->
+        <section id="auditView" class="view hidden">
+          <div class="page-head">
+            <div>
+              <h1>Audit Log</h1>
+              <p class="muted">ประวัติการทำรายการสำคัญในระบบ</p>
+            </div>
+            <button id="refreshAuditBtn" class="btn ghost">รีเฟรช</button>
+          </div>
+
+          <div class="card branch-toolbar">
+            <input id="auditSearch" class="search" placeholder="ค้นหา User / Action / Target">
+            <select id="auditActionFilter">
+              <option value="all">ทุก Action</option>
+              <option value="BRANCH_SAVE">BRANCH_SAVE</option>
+              <option value="USER_CREATE">USER_CREATE</option>
+              <option value="USER_UPDATE">USER_UPDATE</option>
+              <option value="REQUEST_CREATE">REQUEST_CREATE</option>
+              <option value="REQUEST_DELETE">REQUEST_DELETE</option>
+              <option value="SCHEDULE_SAVE">SCHEDULE_SAVE</option>
+              <option value="CHANGE_REQUEST_CREATE">CHANGE_REQUEST_CREATE</option>
+              <option value="CHANGE_REQUEST_DECIDE">CHANGE_REQUEST_DECIDE</option>
+              <option value="PASSWORD_CHANGE">PASSWORD_CHANGE</option>
+              <option value="RESET_OPERATIONAL_DATA">RESET_OPERATIONAL_DATA</option>
+            </select>
+          </div>
+
+          <div id="auditEmpty" class="empty card hidden">ยังไม่มี Audit Log</div>
+
+          <div id="auditTableWrap" class="table-wrap card hidden">
+            <table>
+              <thead>
+                <tr>
+                  <th>เวลา</th>
+                  <th>User</th>
+                  <th>Action</th>
+                  <th>Target</th>
+                  <th>รายละเอียด</th>
+                </tr>
+              </thead>
+              <tbody id="auditRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- MAINTENANCE -->
+        <section id="maintenanceView" class="view hidden">
+          <div class="page-head">
+            <div>
+              <h1>Maintenance</h1>
+              <p class="muted">เครื่องมือสำหรับ Admin</p>
+            </div>
+          </div>
+
+          <div class="grid cards3">
+            <div class="card">
+              <h2>ข้อมูล Master</h2>
+              <p class="muted">Users, Branches และ Settings จะไม่ถูกลบจาก Reset ด้านล่าง</p>
+            </div>
+
+            <div class="card">
+              <h2>Operational Data</h2>
+              <p class="muted">Schedules, Requests และ Change Requests เป็นข้อมูลที่ล้างได้สำหรับการทดสอบ</p>
+            </div>
+
+            <div class="card danger-zone">
+              <h2>ล้างข้อมูลทดสอบ</h2>
+              <p class="muted">ล้างเฉพาะตารางเวร / Request / ตัวนับ Request / คำขอแก้เวร</p>
+              <button id="resetOperationalBtn" class="btn danger">ล้าง Operational Data</button>
+            </div>
+          </div>
+        </section>
+
       </main>
     </div>
   </div>
@@ -273,6 +350,6 @@
   <!-- MODAL -->
   <div id="modalHost"></div>
 
-  <script type="module" src="./app.js?v=7.0.0"></script>
+  <script type="module" src="./app.js?v=8.0.0"></script>
 </body>
 </html>

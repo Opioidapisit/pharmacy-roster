@@ -194,3 +194,10 @@ th{background:#f8fafc;color:#475569;position:sticky;top:0}
 .schedule-cell-error{background:#fff1f2!important}
 .coverage-bad i{background:#ef4444!important}
 .coverage-mid i{background:#f59e0b!important}
+
+/* V8 Maintenance */
+.audit-detail{font-size:10px;color:#475569;max-width:420px;white-space:pre-wrap;word-break:break-word}
+.danger-zone{border-color:#fecaca;background:#fffafa}
+.danger-zone h2{color:#991b1b}
+.maintenance-warning{background:#fff7ed;border:1px solid #fed7aa;border-radius:9px;padding:9px 11px;color:#9a3412;font-size:11px;margin:10px 0}
+.validation-panel.user-hidden-warnings .validation-item.warn{display:none}
